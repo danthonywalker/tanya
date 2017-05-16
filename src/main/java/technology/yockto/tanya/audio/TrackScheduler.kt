@@ -43,6 +43,8 @@ class TrackScheduler(private val player: AudioPlayer) {
             }
         })
     }
+    
+    fun remove(track: AudioTrack): Boolean = lock.withLock { backingQueue.remove(track) }
 
     fun play(track: AudioTrack): Boolean = lock.withLock {
         val playing = player.startTrack(track, true)

@@ -33,6 +33,7 @@ import mu.KLogging
 import sx.blah.discord.api.events.EventSubscriber
 import sx.blah.discord.handle.impl.events.ReadyEvent
 import sx.blah.discord.handle.impl.events.guild.channel.message.MessageReceivedEvent
+import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelLeaveEvent
 import sx.blah.discord.handle.obj.IChannel
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IVoiceChannel
@@ -46,8 +47,6 @@ import technology.yockto.tanya.command.AbstractCommand
 import technology.yockto.tanya.json.getJsonFile
 import java.awt.Color
 import java.sql.ResultSet
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeUnit.SECONDS
@@ -126,6 +125,35 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                 player.addListener(this@MusicCommand) == Unit
                             }
                         }.execute()
+                    }
+                }
+            }
+        }
+    }
+
+    @EventSubscriber
+    fun onUserVoiceChannelLeaveEvent(event: UserVoiceChannelLeaveEvent) {
+        val guild = event.guild //Check for guild as the user may have tracks from other guilds too
+        val userTracks = metadata.filterValues { (it.guild == guild) && (it.author == event.user) }
+
+        if(userTracks.isNotEmpty()) {
+            Tanya.database.useConnection {
+                val sql = "SELECT auto_remove FROM music_configuration WHERE guild_id = ?"
+                logger.info { "PrepareStatement SQL: $sql" }
+                it.prepareStatement(sql).use {
+
+                    it.setLong(1, guild.longID)
+                    it.executeQuery().use {
+
+                        if(it.next() && it.getBoolean("auto_remove")) { //Clear from queue
+                            val scheduler = guildAudioManager.getMetadata(guild).scheduler
+                            userTracks.forEach { audioTrack, iMessage ->
+
+                                scheduler.remove(audioTrack)
+                                metadata.remove(audioTrack, iMessage)
+                                scheduler.takeIf { it.currentTrack == audioTrack }?.skip()
+                            }
+                        }
                     }
                 }
             }
@@ -329,7 +357,8 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                         val scheduler = guildAudioManager.getMetadata(guild).scheduler
                         val fakeQueue = scheduler.queue //Queue simply copies original
 
-                        //Stores as the ResultSet will be closed later
+                        //Get results as ResultSet will be closed later
+                        val playlistLimit = it.getInt("playlist_limit")
                         val streamable = it.getBoolean("allow_stream")
                         val requestLimit = it.getInt("request_limit")
                         val queueLimit = it.getInt("queue_limit")
@@ -383,16 +412,23 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                             }
 
                             override fun playlistLoaded(playlist: AudioPlaylist) {
-                                val playlistLimit = it.getInt("playlist_limit") - 1
+                                val tracks = ArrayList<AudioTrack>(playlistLimit)
+                                val playlistTracks = playlist.tracks
                                 var successfulUploadCount = 0
-                                for(i in 0..playlistLimit) {
 
-                                    val track = playlist.tracks[i]
-                                    metadata.put(track, message)
-                                    scheduler.play(track)
-                                    fakeQueue.add(track)
+                                var index = 0 //Keeps iterating through playlist to find a valid track to play
+                                while(index < playlistTracks.size && successfulUploadCount <= playlistLimit) {
 
-                                    successfulUploadCount++
+                                    val track = playlistTracks[index]
+                                    if(isAudioTrackValid(track)) {
+                                        metadata.put(track, message)
+                                        fakeQueue.add(track)
+                                        tracks.add(track)
+
+                                        successfulUploadCount++
+                                    }
+
+                                    index++
                                 }
 
                                 RequestBuilder(client).apply {
@@ -412,13 +448,14 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                             withChannel(channel)
                                         }.send() != null
                                     }
+
+                                    andThen { tracks.forEach { scheduler.play(it) } == Unit }
                                 }.execute()
                             }
 
                             override fun trackLoaded(track: AudioTrack) {
                                 if(isAudioTrackValid(track)) {
                                     metadata.put(track, message)
-                                    scheduler.play(track)
                                     fakeQueue.add(track)
 
                                     RequestBuilder(client).apply {
@@ -438,7 +475,9 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                                 withChannel(channel)
                                             }.send() != null
                                         }
-                                    }.execute()
+
+                                        andThen { scheduler.play(track) is Boolean }
+                                    }.execute() //Ignore even if play() return false
 
                                 } else { //Shows the restrictions.
                                     RequestBuilder(client).apply {
@@ -448,14 +487,16 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                             MessageBuilder(client).apply {
                                                 EmbedBuilder().apply {
 
-                                                    appendField("Streamable?", streamable.toString(), true)
+                                                    appendField("Streamable", streamable.toString(), true)
                                                     appendField("Time Limit", "${timeLimit}s", true)
                                                     appendField("Queue Limit", queueLimit.toString(), true)
                                                     appendField("Request Limit", requestLimit.toString(), true)
 
+                                                    withDescription("Ensure the audio is bounded by the restrictions " +
+                                                        "that are specifically configured for this server as detailed.")
                                                     withFooterText("$username: $content")
                                                     withTitle("Queue Request Failed")
-                                                    withColor(Color.CYAN)
+                                                    withColor(Color.RED)
                                                     withEmbed(build())
                                                 }
 
@@ -508,11 +549,6 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                             }
                         }.execute()
                     }
-
-                    RequestBuilder(client).apply {
-                        shouldBufferRequests(true)
-                        doAction { message.delete() == Unit }
-                    }.execute()
                 }
             }
         }
@@ -529,8 +565,11 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
         appendField("Title", trackInfo.title, true)
         appendField("Uploader", trackInfo.author, true)
 
-        val timeFormat = SimpleDateFormat("HH:mm:ss:SSS")
-        val formattedTime = timeFormat.format(Date(trackInfo.length))
+        val length = trackInfo.length
+        val milliSecondsTimeUnit = TimeUnit.MILLISECONDS
+        val formattedTime = String.format("%02d:%02d:%02d", milliSecondsTimeUnit.toHours(length),
+            milliSecondsTimeUnit.toMinutes(length) - TimeUnit.HOURS.toMinutes(milliSecondsTimeUnit.toHours(length)),
+            milliSecondsTimeUnit.toSeconds(length) - TimeUnit.MINUTES.toSeconds(milliSecondsTimeUnit.toMinutes(length)))
         appendField("Length", formattedTime, true)
 
         val requester = metadata.author.name

@@ -31,12 +31,12 @@ class GuildAudioManager : AutoCloseable {
     private val playerManager = DefaultAudioPlayerManager().apply {
         getJsonFile(Config::class).lavaPlayer.apply {
 
-            //setItemLoaderThreadPoolSize(itemLoaderThreadPoolSize)
-            //setPlayerCleanupThreshold(playerCleanupThreshold)
-            //setTrackStuckThreshold(trackStuckThreshold)
+            setItemLoaderThreadPoolSize(itemLoaderThreadPoolSize)
+            setPlayerCleanupThreshold(playerCleanupThreshold)
+            setTrackStuckThreshold(trackStuckThreshold)
             setFrameBufferDuration(frameBufferDuration)
-            //setUseSeekGhosting(seekGhosting)
-            //useRemoteNodes(*remoteNodes)
+            setUseSeekGhosting(seekGhosting)
+            useRemoteNodes(*remoteNodes)
         }
 
         AudioSourceManagers.registerRemoteSources(this)
