@@ -31,11 +31,13 @@ import com.sedmelluq.discord.lavaplayer.track.AudioTrack
 import com.sedmelluq.discord.lavaplayer.track.AudioTrackEndReason
 import mu.KLogging
 import sx.blah.discord.api.events.EventSubscriber
+import sx.blah.discord.api.events.IListener
 import sx.blah.discord.handle.impl.events.ReadyEvent
 import sx.blah.discord.handle.impl.events.guild.channel.message.MessageReceivedEvent
 import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelLeaveEvent
 import sx.blah.discord.handle.obj.IChannel
 import sx.blah.discord.handle.obj.IMessage
+import sx.blah.discord.handle.obj.IUser
 import sx.blah.discord.handle.obj.IVoiceChannel
 import sx.blah.discord.handle.obj.Permissions.ADMINISTRATOR
 import sx.blah.discord.util.EmbedBuilder
@@ -72,6 +74,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
 
             1 -> { //Cam assume link
                 when(arguments[0]) {
+                    "voteskip" -> return voteSkip(context)
                     "enable" -> return enable(context)
                     "help" -> return help(context)
                     else -> return play(context)
@@ -114,16 +117,8 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                 it.deleteRow() //Since bot can't connect to voice just disable the module
                             }
 
-                            doAction { voiceChannel.join() == Unit }
-
-                            andThen { //guild_id is guaranteed to exist if it hits here
-                                val guild = client.getGuildByID(it.getLong("guild_id"))
-
-                                //Ensure only one player listener exists per equal guild
-                                val player = guildAudioManager.getMetadata(guild).player
-                                player.removeListener(this@MusicCommand)
-                                player.addListener(this@MusicCommand) == Unit
-                            }
+                            doAction { true }
+                            andThen(voiceChannel)
                         }.execute()
                     }
                 }
@@ -185,6 +180,132 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                 }.send() != null
             }
         }.execute()
+    }
+
+    private fun voteSkip(context: CommandContext) {
+        val message = context.message
+        val content = message.content
+        val channel = message.channel
+        val client = message.client
+        val guild = message.guild
+        val user = message.author
+        val username = user.name
+
+        Tanya.database.useConnection {
+            val sql = "SELECT voice_id, text_id, force_voice, force_text, skip_threshold " +
+                "FROM music_configuration WHERE guild_id = ?"
+            logger.info { "PrepareStatement SQL: $sql" }
+            it.prepareStatement(sql).use {
+
+                it.setLong(1, guild.longID)
+                it.executeQuery().use {
+                    if(it.next()) {
+
+                        //If message is not being received correctly then do not bother processing
+                        it.takeUnless { it.isValidRequest(message) }?.let { return@useConnection }
+
+                        val metadata = guildAudioManager.getMetadata(guild)
+                        val skipThreshold = it.getInt("skip_threshold")
+                        val forceVoice = it.getBoolean("force_voice")
+                        val voiceId = it.getLong("voice_id")
+                        val scheduler = metadata.scheduler
+
+                        if(skipThreshold == -1) {
+                            RequestBuilder(client).apply {
+                                shouldBufferRequests(true)
+
+                                doAction { //Mimic a RequestBuffer
+                                    MessageBuilder(client).apply {
+                                        EmbedBuilder().apply {
+
+                                            appendField("Vote Skip Disabled", "The vote skip feature for this server " +
+                                                "is currently disabled. Ask an *Administrator* to change this.", false)
+                                            withFooterText("$username: $content")
+                                            withColor(Color.YELLOW)
+                                            withEmbed(build())
+                                        }
+
+                                        withChannel(channel)
+                                    }.send() != null
+                                }
+                            }.execute()
+
+                        } else if(scheduler.currentTrack != null) {
+                            val initialTrack = scheduler.currentTrack
+                            val voters = ConcurrentHashMap.newKeySet<IUser>()
+
+                            client.dispatcher.registerListener(IListener<MessageReceivedEvent> { event ->
+                                if(scheduler.currentTrack == initialTrack) { //Checks if song has changed
+
+                                    if((event.channel == channel)) { //Waits for messages that come from voters
+                                        val connectedUsers = client.getVoiceChannelByID(voiceId).connectedUsers
+                                        val voter = event.author
+
+                                        if(!(forceVoice && !connectedUsers.contains(voter))) {
+                                            //Doesn't add a vote for those not in a voice chat
+
+                                            when(event.message.content) {
+                                                "voteyes" -> voters.add(voter)
+                                                "voteno" -> voters.remove(voter)
+                                            }
+
+                                            val votersSize = voters.size.toDouble()
+                                            val connectedSize = connectedUsers.size.toDouble() - 1
+                                            val currentThreshold = (votersSize / connectedSize) * 100
+                                            if(currentThreshold >= skipThreshold) {
+                                                scheduler.skip() //Move to the next
+                                            }
+
+                                            RequestBuilder(client).apply {
+                                                shouldBufferRequests(true)
+
+                                                doAction { //Mimic a RequestBuffer
+                                                    MessageBuilder(client).apply {
+                                                        EmbedBuilder().apply {
+
+                                                            withDescription("Current Threshold: $currentThreshold%")
+                                                            withTitle("Vote Skip Status")
+                                                            withColor(Color.WHITE)
+                                                            withEmbed(build())
+                                                        }
+
+                                                        withChannel(channel)
+                                                    }.send() != null
+                                                }
+                                            }.execute()
+                                        }
+                                    }
+
+                                } else { //Song was changed so ignore listener
+                                    client.dispatcher.unregisterListener(this)
+                                }
+                            })
+
+                            RequestBuilder(client).apply {
+                                shouldBufferRequests(true)
+
+                                doAction { //Mimic a RequestBuffer
+                                    MessageBuilder(client).apply {
+                                        EmbedBuilder().apply {
+
+                                            withDescription("A vote to skip the currently playing song has been " +
+                                                "initiated! Type either `voteyes` or `voteno` in this channel to " +
+                                                "vote. Vote will be determined by a $skipThreshold% \"yes\" threshold.")
+                                            withFooterText("$username: $content")
+                                            withTitle("Vote Skip Initiated")
+                                            withColor(Color.WHITE)
+                                            withEmbed(build())
+                                        }
+
+                                        withChannel(channel)
+                                    }.send() != null
+                                }
+                            }.execute()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun enable(context: CommandContext) {
@@ -257,8 +378,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     (textChannel != null) && (voiceChannel != null)
                 }
 
-                andThen { voiceChannel?.join() == Unit }
-
+                andThen(voiceChannel!!)
                 andThen { //By this point, do save
                     Tanya.database.useConnection {
                         val sql = "INSERT INTO music_configuration (guild_id, voice_id, text_id) " +
@@ -277,11 +397,6 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     }
                 }
             }.execute()
-
-            //Ensure only one player listener exists per equal guild
-            val player = guildAudioManager.getMetadata(guild).player
-            player.removeListener(this)
-            player.addListener(this)
 
         } else { //Only lets trusted users
             RequestBuilder(client).apply {
@@ -316,7 +431,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
         val username = user.name
 
         val trackUrl = context.args.getOrNull(0) ?: message.attachments[0].url
-        val voiceChannel: IVoiceChannel? = user.getVoiceStateForGuild(guild).channel
+        logger.debug { "User, $username, requested the following track: $trackUrl" }
 
         Tanya.database.useConnection {
             val sql = "SELECT * FROM music_configuration WHERE guild_id = ?"
@@ -327,32 +442,8 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                 it.executeQuery().use {
                     if(it.next()) {
 
-                        if(it.getBoolean("force_text") && (it.getLong("text_id") != channel.longID)) {
-                            return@useConnection //Text usage should be obvious so ignore the commands
-
-                        } else if(it.getBoolean("force_voice") && (it.getLong("voice_id") != voiceChannel?.longID)) {
-                            RequestBuilder(client).apply {
-                                shouldBufferRequests(true)
-
-                                doAction { //Mimic a RequestBuffer
-                                    MessageBuilder(client).apply {
-                                        EmbedBuilder().apply {
-
-                                            withDescription("**$username**, in order to make a request " +
-                                                "you *must* be in the dedicated music voice channel!")
-                                            withFooterText("$username: $content")
-                                            withColor(Color.RED)
-                                            withEmbed(build())
-                                        }
-
-                                        withChannel(channel)
-                                    }.send() != null
-                                }
-                            }.execute()
-
-                            @Suppress("LABEL_NAME_CLASH")
-                            return@use //Will do a delete
-                        }
+                        //If message is not being received correctly then do not bother processing
+                        it.takeUnless { it.isValidRequest(message) }?.let { return@useConnection }
 
                         val scheduler = guildAudioManager.getMetadata(guild).scheduler
                         val fakeQueue = scheduler.queue //Queue simply copies original
@@ -398,8 +489,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                         MessageBuilder(client).apply {
                                             EmbedBuilder().apply {
 
-                                                withDescription("An unexpected error occurred! Contact " +
-                                                    "the developers on Github immediately!\n$exception")
+                                                withDescription("An unexpected error occurred!\n$exception")
                                                 withFooterText("$username: $content")
                                                 withColor(Color.RED)
                                                 withEmbed(build())
@@ -416,8 +506,8 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                 val playlistTracks = playlist.tracks
                                 var successfulUploadCount = 0
 
-                                var index = 0 //Keeps iterating through playlist to find a valid track to play
-                                while(index < playlistTracks.size && successfulUploadCount <= playlistLimit) {
+                                var index = 0 //Keep iterating through playlist to find a valid track to play
+                                while(index < playlistTracks.size && successfulUploadCount < playlistLimit) {
 
                                     val track = playlistTracks[index]
                                     if(isAudioTrackValid(track)) {
@@ -441,7 +531,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                                 withDescription("Successfully queued $successfulUploadCount " +
                                                     "song(s) from the ${playlist.name} playlist!")
                                                 withFooterText("$username: $content")
-                                                withColor(Color.CYAN)
+                                                withColor(Color.GREEN)
                                                 withEmbed(build())
                                             }
 
@@ -468,7 +558,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                                     withFooterText("$username: $content")
                                                     withTitle("Successful Queue Request")
                                                     appendAudioTrack(track)
-                                                    withColor(Color.CYAN)
+                                                    withColor(Color.GREEN)
                                                     withEmbed(build())
                                                 }
 
@@ -528,26 +618,6 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                 }.execute()
                             }
                         })
-
-                    } else { //A module is not enabled
-                        RequestBuilder(client).apply {
-                            shouldBufferRequests(true)
-
-                            doAction { //Mimic a RequestBuffer
-                                MessageBuilder(client).apply {
-                                    EmbedBuilder().apply {
-
-                                        withDescription("The music module is not enabled on this server! Ask an " +
-                                            "*Administrator* to enable it by using the *~music enable* command.")
-                                        withFooterText("$username: $content")
-                                        withColor(Color.RED)
-                                        withEmbed(build())
-                                    }
-
-                                    withChannel(channel)
-                                }.send() != null
-                            }
-                        }.execute()
                     }
                 }
             }
@@ -577,6 +647,69 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
         appendField("Link", "<${trackInfo.uri}>", true)
 
         return withFooterText("$requester: ${metadata.content}")
+    }
+
+    private fun RequestBuilder.andThen(channel: IVoiceChannel) = andThen {
+        val successful = (channel.join() == Unit) //Can fail on occasions.
+        val player = guildAudioManager.getMetadata(channel.guild).player
+        player.removeListener(this@MusicCommand)
+        player.addListener(this@MusicCommand)
+        successful
+    }
+
+    private fun ResultSet.isValidRequest(message: IMessage): Boolean {
+        val channel = message.channel
+        val content = message.content
+        val client = message.client
+        val user = message.author
+        val username = user.name
+
+        val voiceChannelId = user.getVoiceStateForGuild(message.guild).channel?.longID
+
+        if(getBoolean("force_text") && getLong("text_id") != channel.longID) {
+            RequestBuilder(client).apply {
+                shouldBufferRequests(true)
+
+                doAction { //Mimic a RequestBuffer
+                    MessageBuilder(client).apply {
+                        EmbedBuilder().apply {
+
+                            withDescription("**$username**, in order to make a request you " +
+                                "must *must* request from the dedicated music **text** channel!")
+                            withFooterText("$username: $content")
+                            withColor(Color.RED)
+                            withEmbed(build())
+                        }
+
+                        withChannel(channel)
+                    }.send() != null
+                }
+            }.execute()
+            return false
+
+        } else if(getBoolean("force_voice") && getLong("voice_id") != voiceChannelId) {
+            RequestBuilder(client).apply {
+                shouldBufferRequests(true)
+
+                doAction { //Mimic a RequestBuffer
+                    MessageBuilder(client).apply {
+                        EmbedBuilder().apply {
+
+                            withDescription("**$username**, in order to make a request " +
+                                "you *must* be in the dedicated music **voice** channel!")
+                            withFooterText("$username: $content")
+                            withColor(Color.RED)
+                            withEmbed(build())
+                        }
+
+                        withChannel(channel)
+                    }.send() != null
+                }
+            }.execute()
+            return false
+        }
+
+        return true
     }
 
     private companion object : KLogging()
