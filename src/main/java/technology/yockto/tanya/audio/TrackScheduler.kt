@@ -31,10 +31,8 @@ class TrackScheduler(private val player: AudioPlayer) {
 
     //Since an ArrayList constructor uses some iterator a lock must be required for this
     val queue: MutableList<AudioTrack> get() = lock.withLock { ArrayList(backingQueue) }
-
-    @Volatile var currentTrack: AudioTrack? = null
-        private set //Only allows "this" to modify
-
+    val currentTrack: AudioTrack? get() = player.playingTrack
+    
     init { //Hides listener to preserve class's hierarchy
         player.addListener(object : AudioEventAdapter() {
 
@@ -49,10 +47,7 @@ class TrackScheduler(private val player: AudioPlayer) {
     fun play(track: AudioTrack): Boolean = lock.withLock {
         val playing = player.startTrack(track, true)
 
-        if(playing) {
-            currentTrack = track
-
-        } else { //Waits to be played
+        if(!playing) { //Wait to play
             backingQueue.offer(track)
         }
 
@@ -60,10 +55,8 @@ class TrackScheduler(private val player: AudioPlayer) {
     }
 
     fun skip(): AudioTrack? = lock.withLock {
-        val previousTrack = currentTrack
-
-        currentTrack = backingQueue.poll()
-        player.startTrack(currentTrack, false)
+        val previousTrack = player.playingTrack
+        player.startTrack(backingQueue.poll(), false)
 
         previousTrack
     }

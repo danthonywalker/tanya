@@ -36,6 +36,7 @@ import sx.blah.discord.handle.impl.events.ReadyEvent
 import sx.blah.discord.handle.impl.events.guild.channel.message.MessageReceivedEvent
 import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelLeaveEvent
 import sx.blah.discord.handle.obj.IChannel
+import sx.blah.discord.handle.obj.IGuild
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IUser
 import sx.blah.discord.handle.obj.IVoiceChannel
@@ -54,6 +55,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeUnit.SECONDS
 
 class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEventListener {
+    private val skipVoters = ConcurrentHashMap<IGuild, MutableSet<IUser>>()
     private val metadata = ConcurrentHashMap<AudioTrack, IMessage>()
     private val guildAudioManager = GuildAudioManager()
 
@@ -191,24 +193,28 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
         val user = message.author
         val username = user.name
 
-        Tanya.database.useConnection {
-            val sql = "SELECT voice_id, text_id, force_voice, force_text, skip_threshold " +
-                "FROM music_configuration WHERE guild_id = ?"
-            logger.info { "PrepareStatement SQL: $sql" }
-            it.prepareStatement(sql).use {
+        var voters = skipVoters[guild]
+        if(voters == null) {
 
-                it.setLong(1, guild.longID)
-                it.executeQuery().use {
-                    if(it.next()) {
+            Tanya.database.useConnection {
+                val sql = "SELECT voice_id, text_id, force_voice, force_text, " +
+                    "skip_threshold FROM music_configuration WHERE guild_id = ?"
+                logger.info { "PrepareStatement SQL: $sql" }
+                it.prepareStatement(sql).use {
 
+                    it.setLong(1, guild.longID)
+                    it.executeQuery().use {
+
+                        //This is already super nested so just compact it for now
+                        it.takeUnless { it.next() }?.let { return@useConnection }
                         //If message is not being received correctly then do not bother processing
                         it.takeUnless { it.isValidRequest(message) }?.let { return@useConnection }
 
-                        val metadata = guildAudioManager.getMetadata(guild)
+                        val scheduler = guildAudioManager.getMetadata(guild).scheduler
                         val skipThreshold = it.getInt("skip_threshold")
                         val forceVoice = it.getBoolean("force_voice")
+                        val currentSong = scheduler.currentTrack
                         val voiceId = it.getLong("voice_id")
-                        val scheduler = metadata.scheduler
 
                         if(skipThreshold == -1) {
                             RequestBuilder(client).apply {
@@ -218,9 +224,10 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                     MessageBuilder(client).apply {
                                         EmbedBuilder().apply {
 
-                                            appendField("Vote Skip Disabled", "The vote skip feature for this server " +
-                                                "is currently disabled. Ask an *Administrator* to change this.", false)
+                                            withDescription("Vote skip for this server is currently disabled. Ask " +
+                                                "an *Administrator* to change this via the *~music config* command.")
                                             withFooterText("$username: $content")
+                                            withTitle("Vote Skip Disabled")
                                             withColor(Color.YELLOW)
                                             withEmbed(build())
                                         }
@@ -230,54 +237,80 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                                 }
                             }.execute()
 
-                        } else if(scheduler.currentTrack != null) {
-                            val initialTrack = scheduler.currentTrack
-                            val voters = ConcurrentHashMap.newKeySet<IUser>()
+                        } else if(currentSong != null) {
+                            val dispatcher = client.dispatcher
+                            voters = skipVoters.getOrPut(guild, { ConcurrentHashMap.newKeySet() })
+                            dispatcher.registerListener(IListener<MessageReceivedEvent> { event ->
 
-                            client.dispatcher.registerListener(IListener<MessageReceivedEvent> { event ->
-                                if(scheduler.currentTrack == initialTrack) { //Checks if song has changed
+                                if(scheduler.currentTrack == currentSong) { //Wait for messages from voters
+                                    val connectedUsers = client.getVoiceChannelByID(voiceId).connectedUsers
+                                    val voter = event.author
 
-                                    if((event.channel == channel)) { //Waits for messages that come from voters
-                                        val connectedUsers = client.getVoiceChannelByID(voiceId).connectedUsers
-                                        val voter = event.author
+                                    if(!(forceVoice && !connectedUsers.contains(voter))) {
+                                        fun calculateThreshold() { //Need Double precision
 
-                                        if(!(forceVoice && !connectedUsers.contains(voter))) {
-                                            //Doesn't add a vote for those not in a voice chat
-
-                                            when(event.message.content) {
-                                                "voteyes" -> voters.add(voter)
-                                                "voteno" -> voters.remove(voter)
-                                            }
-
-                                            val votersSize = voters.size.toDouble()
+                                            val votersSize = voters!!.size.toDouble()
                                             val connectedSize = connectedUsers.size.toDouble() - 1
                                             val currentThreshold = (votersSize / connectedSize) * 100
+
                                             if(currentThreshold >= skipThreshold) {
-                                                scheduler.skip() //Move to the next
+                                                RequestBuilder(client).apply {
+                                                    shouldBufferRequests(true)
+
+                                                    doAction { //Mimic a RequestBuffer
+                                                        MessageBuilder(client).apply {
+                                                            EmbedBuilder().apply {
+
+                                                                withDescription("Current Threshold: $currentThreshold%")
+                                                                withFooterText("Skipping current song...")
+                                                                withTitle("Vote Skip Status")
+                                                                withColor(Color.WHITE)
+                                                                withEmbed(build())
+                                                            }
+
+                                                            withChannel(channel)
+                                                        }.send() != null
+                                                    }
+
+                                                    andThen { scheduler.skip() != null }
+                                                }.execute() //Force a skip after message
+
+                                            } else { //Threshold hasn't passed
+                                                RequestBuilder(client).apply {
+                                                    shouldBufferRequests(true)
+
+                                                    doAction { //Mimic a RequestBuffer
+                                                        MessageBuilder(client).apply {
+                                                            EmbedBuilder().apply {
+
+                                                                withDescription("Current Threshold: $currentThreshold%")
+                                                                withTitle("Vote Skip Status")
+                                                                withColor(Color.WHITE)
+                                                                withEmbed(build())
+                                                            }
+
+                                                            withChannel(channel)
+                                                        }.send() != null
+                                                    }
+                                                }.execute()
                                             }
+                                        }
 
-                                            RequestBuilder(client).apply {
-                                                shouldBufferRequests(true)
-
-                                                doAction { //Mimic a RequestBuffer
-                                                    MessageBuilder(client).apply {
-                                                        EmbedBuilder().apply {
-
-                                                            withDescription("Current Threshold: $currentThreshold%")
-                                                            withTitle("Vote Skip Status")
-                                                            withColor(Color.WHITE)
-                                                            withEmbed(build())
-                                                        }
-
-                                                        withChannel(channel)
-                                                    }.send() != null
-                                                }
-                                            }.execute()
+                                        when(event.message.content) {
+                                            "voteyes" -> { //Add vote
+                                                voters!!.add(voter)
+                                                calculateThreshold()
+                                            }
+                                            "voteno" -> { //Clear vote
+                                                voters!!.remove(voter)
+                                                calculateThreshold()
+                                            }
                                         }
                                     }
 
-                                } else { //Song was changed so ignore listener
-                                    client.dispatcher.unregisterListener(this)
+                                } else { //Song has changed so end vote
+                                    dispatcher.unregisterListener(this)
+                                    skipVoters.remove(guild)
                                 }
                             })
 
@@ -305,6 +338,26 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     }
                 }
             }
+
+        } else { //There's an ongoing vote
+            RequestBuilder(client).apply {
+                shouldBufferRequests(true)
+
+                doAction { //Mimic a RequestBuffer
+                    MessageBuilder(client).apply {
+                        EmbedBuilder().apply {
+
+                            withDescription("A vote to skip the current song is already in progress! To vote, " +
+                                "either enter `voteyes` or `voteno` in the channel the vote was initiated!")
+                            withFooterText("$username: $content")
+                            withColor(Color.WHITE)
+                            withEmbed(build())
+                        }
+
+                        withChannel(channel)
+                    }.send() != null
+                }
+            }.execute()
         }
     }
 
@@ -530,6 +583,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
 
                                                 withDescription("Successfully queued $successfulUploadCount " +
                                                     "song(s) from the ${playlist.name} playlist!")
+                                                withTitle("Successful Queue Request")
                                                 withFooterText("$username: $content")
                                                 withColor(Color.GREEN)
                                                 withEmbed(build())
