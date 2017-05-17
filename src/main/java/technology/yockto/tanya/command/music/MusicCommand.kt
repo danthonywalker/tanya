@@ -78,6 +78,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                 when(arguments[0]) {
                     "voteskip" -> return voteSkip(context)
                     "enable" -> return enable(context)
+                    "queue" -> return queue(context)
                     "help" -> return help(context)
                     else -> return play(context)
                 }
@@ -471,6 +472,65 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     }.send() != null
                 }
             }.execute()
+        }
+    }
+
+    private fun queue(context: CommandContext) {
+        val message = context.message
+        val client = message.client
+        val guild = message.guild
+
+        Tanya.database.useConnection {
+            val sql = "SELECT voice_id, text_id, force_voice, force_text " +
+                "FROM music_configuration WHERE guild_id = ?"
+            logger.info { "PrepareStatement SQL: $sql" }
+            it.prepareStatement(sql).use {
+
+                it.setLong(1, guild.longID)
+                it.executeQuery().use {
+                    if(it.next()) {
+
+                        //If message is not being received correctly then do not bother processing
+                        it.takeUnless { it.isValidRequest(message) }?.let { return@useConnection }
+
+                        val queue = guildAudioManager.getMetadata(guild).scheduler.queue
+                        val queueBuffer = StringBuilder("No songs are currently queued!")
+
+                        if(queue.isNotEmpty()) { //Deletes the buffer
+                            queueBuffer.delete(0, queueBuffer.length)
+
+                            for((index, track) in queue.withIndex()) {
+                                val metadata = metadata[track]!!
+                                val trackInfo = track.info
+
+                                val queueData = "[$index + 1]: ${trackInfo.title} by ${metadata.author.name}\n"
+                                val phantomLength = queueBuffer.length + queueData.length
+                                if(phantomLength > (IMessage.MAX_MESSAGE_LENGTH - Byte.MAX_VALUE)) {
+                                    break //Interrupts loop and allows one more thing to be appended
+
+                                } else { //Append more queue data
+                                    queueBuffer.append(queueData)
+                                }
+                            }
+
+                            queueBuffer.append("\nThere is currently ${queue.size} song(s) in the queue!")
+                        }
+
+                        RequestBuilder(client).apply {
+                            shouldBufferRequests(true)
+
+                            doAction { //Mimic a RequestBuffer
+                                MessageBuilder(client).apply {
+
+                                    appendContent(":clipboard: **| Song Queue**\n")
+                                    appendCode("markdown", queueBuffer.toString())
+                                    withChannel(message.channel)
+                                }.send() != null
+                            }
+                        }.execute()
+                    }
+                }
+            }
         }
     }
 
