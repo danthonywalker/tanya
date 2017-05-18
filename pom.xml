@@ -61,13 +61,13 @@
         <dependency>
             <groupId>com.sedmelluq</groupId>
             <artifactId>lavaplayer</artifactId>
-            <version>1.2.34</version>
+            <version>1.2.39</version>
         </dependency>
 
         <dependency>
-            <groupId>com.google.code.gson</groupId>
-            <artifactId>gson</artifactId>
-            <version>2.8.0</version>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-kotlin</artifactId>
+            <version>2.8.7</version>
         </dependency>
 
         <!-- Old version works around time zone issues -->
@@ -79,7 +79,7 @@
         <dependency>
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>
-            <version>2.6.0</version>
+            <version>2.6.1</version>
         </dependency>
 
         <!-- Overrides transitive dependencies -->

@@ -121,7 +121,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                             }
 
                             doAction { true }
-                            andThen(voiceChannel)
+                            andThenConnect { voiceChannel }
                         }.execute()
                     }
                 }
@@ -432,7 +432,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     (textChannel != null) && (voiceChannel != null)
                 }
 
-                andThen(voiceChannel!!)
+                andThenConnect { voiceChannel!! }
                 andThen { //By this point, do save
                     Tanya.database.useConnection {
                         val sql = "INSERT INTO music_configuration (guild_id, voice_id, text_id) " +
@@ -763,9 +763,12 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
         return withFooterText("$requester: ${metadata.content}")
     }
 
-    private fun RequestBuilder.andThen(channel: IVoiceChannel) = andThen {
-        val successful = (channel.join() == Unit) //Can fail on occasions.
-        val player = guildAudioManager.getMetadata(channel.guild).player
+    private fun RequestBuilder.andThenConnect(channel: () -> IVoiceChannel) = andThen {
+        //andThenConnect needs to be lambda since voice channels won't be initialed yet
+        val voiceChannel = channel.invoke()
+        val successful = (voiceChannel.join() == Unit)
+        val player = guildAudioManager.getMetadata(voiceChannel.guild).player
+
         player.removeListener(this@MusicCommand)
         player.addListener(this@MusicCommand)
         successful
@@ -788,7 +791,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     MessageBuilder(client).apply {
                         EmbedBuilder().apply {
 
-                            withDescription("**$username**, in order to make a request you " +
+                            withDescription("**$username**, in order to execute that command you " +
                                 "must *must* request from the dedicated music **text** channel!")
                             withFooterText("$username: $content")
                             withColor(Color.RED)
@@ -809,7 +812,7 @@ class MusicCommand : AbstractCommand(getJsonFile(MusicConfig::class)), AudioEven
                     MessageBuilder(client).apply {
                         EmbedBuilder().apply {
 
-                            withDescription("**$username**, in order to make a request " +
+                            withDescription("**$username**, in order to execute that command " +
                                 "you *must* be in the dedicated music **voice** channel!")
                             withFooterText("$username: $content")
                             withColor(Color.RED)

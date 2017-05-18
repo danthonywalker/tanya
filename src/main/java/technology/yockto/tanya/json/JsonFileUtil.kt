@@ -17,18 +17,18 @@
  */
 package technology.yockto.tanya.json
 
-import com.google.gson.Gson
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import technology.yockto.tanya.json.SourceType.EXTERNAL
 import technology.yockto.tanya.json.SourceType.NONE
 import java.io.FileInputStream
-import java.io.FileReader
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
 
 private val jsonFiles = ConcurrentHashMap<KClass<*>, Any?>()
-private val jsonConverter = Gson()
+private val jsonConverter = ObjectMapper().registerKotlinModule()
 
 fun <T : Any> getNullableJsonFile(type: KClass<T>): T? {
     type.takeUnless { jsonFiles.contains(type) }?.let(::reloadJsonFile)
@@ -60,7 +60,7 @@ fun reloadJsonFile(type: KClass<*>) {
         }
         
         source?.takeIf { Files.notExists(destination) }?.let { Files.copy(it, destination) }
-        jsonFiles.put(type, jsonConverter.fromJson(FileReader(destination.toFile()), type.java))
+        jsonFiles.put(type, jsonConverter.readValue(destination.toFile(), type.java))
     }
 }
 
