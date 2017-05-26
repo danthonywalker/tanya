@@ -17,12 +17,12 @@
  */
 package technology.yockto.tanya
 
-import com.darichey.discord.api.Command
-import com.darichey.discord.api.CommandRegistry
 import com.zaxxer.hikari.HikariDataSource
 import sx.blah.discord.api.ClientBuilder
 import sx.blah.discord.api.IDiscordClient
 import sx.blah.discord.modules.Configuration
+import technology.yockto.bc4d4j.impl.getCommandRegistry
+import technology.yockto.tanya.command.Command
 import technology.yockto.tanya.config.Config
 import technology.yockto.tanya.json.getJsonFile
 import java.util.ServiceLoader
@@ -63,9 +63,8 @@ object Tanya : AutoCloseable {
             }
         }.login()
 
-        CommandRegistry.getForClient(client).apply { //Automatic find/load.
-            ServiceLoader.load(Command::class.java).forEach(this::register)
-            prefix = getJsonFile(Config::class).commandPrefix
+        client.getCommandRegistry().apply { //Automatically get / register commands
+            ServiceLoader.load(Command::class.java).forEach(this::registerCommands)
         }
     }
 

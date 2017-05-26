@@ -52,11 +52,10 @@
             <artifactId>Discord4J</artifactId>
             <version>2.8.1</version>
         </dependency>
-        <!-- SNAPSHOT to get around RequestBuffer error -->
         <dependency>
-            <groupId>com.github.Discord4J-Addons</groupId>
-            <artifactId>Commands4J</artifactId>
-            <version>98bff948ab</version>
+            <groupId>com.github.danthonywalker</groupId>
+            <artifactId>bc4d4j</artifactId>
+            <version>0.3.0</version>
         </dependency>
         <dependency>
             <groupId>com.sedmelluq</groupId>

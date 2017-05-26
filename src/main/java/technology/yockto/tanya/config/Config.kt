@@ -22,5 +22,4 @@ import technology.yockto.tanya.json.JsonFile
 @JsonFile(fileName = "config.json")
 data class Config(val authorization: Authorization = Authorization(),
                   val lavaPlayer: LavaPlayer = LavaPlayer(),
-                  val discord4j: Discord4J = Discord4J(),
-                  val commandPrefix: String = "")
+                  val discord4j: Discord4J = Discord4J())

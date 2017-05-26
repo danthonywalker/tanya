@@ -17,13 +17,4 @@
  */
 package technology.yockto.tanya.command
 
-interface CommandConfig {
-    val permissions: Array<String>
-    val deleteCommand: Boolean
-    val caseSensitive: Boolean
-    val eventListener: Boolean
-    val aliases: Array<String>
-    val description: String
-    val usage: String
-    val name: String
-}
+interface Command
