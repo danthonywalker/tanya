@@ -30,19 +30,19 @@ import kotlin.reflect.KClass
 private val jsonFiles = ConcurrentHashMap<KClass<*>, Any?>()
 private val jsonConverter = ObjectMapper().registerKotlinModule()
 
-fun <T : Any> getNullableJsonFile(type: KClass<T>): T? {
-    type.takeUnless { jsonFiles.contains(type) }?.let(::reloadJsonFile)
+fun <T : Any> KClass<T>.getNullableJsonFile(): T? {
+    takeUnless { jsonFiles.contains(it) }?.reloadJsonFile()
 
     @Suppress("UNCHECKED_CAST")
-    return jsonFiles[type] as T?
+    return jsonFiles[this] as T?
 }
 
-fun reloadJsonFile(type: KClass<*>) {
+fun KClass<*>.reloadJsonFile() {
     val jsonFileAnnotation = JsonFile::class
-    val jsonFile = type.annotations.find { it.annotationClass == jsonFileAnnotation }
+    val jsonFile = annotations.find { it.annotationClass == jsonFileAnnotation }
 
     if(jsonFile == null) { //If a @JsonFile annotation is absent then don't attempt to process
-        throw IllegalStateException("$type does not contain a $jsonFileAnnotation annotation")
+        throw IllegalStateException("$this does not contain a $jsonFileAnnotation annotation")
 
     } else { //Guaranteed JsonFile.
         @Suppress("NAME_SHADOWING")
@@ -54,15 +54,15 @@ fun reloadJsonFile(type: KClass<*>) {
             if(it.sourceType == EXTERNAL) {
                 FileInputStream(sourcePath)
 
-            } else { //Use class's path as relative point
-                type.java.getResourceAsStream(sourcePath)
+            } else { //Use class as a relative point
+                java.getResourceAsStream(sourcePath)
             }
         }
         
         source?.takeIf { Files.notExists(destination) }?.let { Files.copy(it, destination) }
-        jsonFiles.put(type, jsonConverter.readValue(destination.toFile(), type.java))
+        jsonFiles.put(this, jsonConverter.readValue(destination.toFile(), java))
     }
 }
 
-fun reloadJsonFiles(): Unit = jsonFiles.keys.forEach(::reloadJsonFile)
-fun <T : Any> getJsonFile(type: KClass<T>): T = getNullableJsonFile(type)!!
+fun reloadJsonFiles(): Unit = jsonFiles.keys.forEach { it.reloadJsonFile() }
+fun <T : Any> KClass<T>.getJsonFile(): T = getNullableJsonFile()!!

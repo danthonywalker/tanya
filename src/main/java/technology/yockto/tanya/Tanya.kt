@@ -29,7 +29,7 @@ import java.util.ServiceLoader
 
 object Tanya : AutoCloseable {
     private val dataSource = HikariDataSource().apply {
-        getJsonFile(Config::class).apply {
+        Config::class.getJsonFile().apply {
 
             authorization.database.let {
                 username = it.username
@@ -47,7 +47,7 @@ object Tanya : AutoCloseable {
         Configuration.LOAD_EXTERNAL_MODULES = false
 
         client = ClientBuilder().apply {
-            getJsonFile(Config::class).apply {
+            Config::class.getJsonFile().apply {
 
                 discord4j.apply { //Settings specific for Discord4J.
                     withRecommendedShardCount(recommendedShardCount)

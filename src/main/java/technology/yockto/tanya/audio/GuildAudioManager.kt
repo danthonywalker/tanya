@@ -24,13 +24,12 @@ import sx.blah.discord.handle.obj.IGuild
 import technology.yockto.tanya.config.Config
 import technology.yockto.tanya.json.getJsonFile
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Future
 
 class GuildAudioManager : AutoCloseable {
     private val metadata = ConcurrentHashMap<IGuild, AudioMetadata>()
     private val playerManager = DefaultAudioPlayerManager().apply {
-        getJsonFile(Config::class).lavaPlayer.apply {
-
+        Config::class.getJsonFile().lavaPlayer.apply {
+            
             setItemLoaderThreadPoolSize(itemLoaderThreadPoolSize)
             setPlayerCleanupThreshold(playerCleanupThreshold)
             setTrackStuckThreshold(trackStuckThreshold)
@@ -43,16 +42,15 @@ class GuildAudioManager : AutoCloseable {
         AudioSourceManagers.registerLocalSource(this)
     }
 
-    fun getMetadata(guild: IGuild): AudioMetadata {
+    fun getAudioMetadata(guild: IGuild): AudioMetadata {
         return metadata.computeIfAbsent(guild, { AudioMetadata(playerManager) }).apply {
             guild.audioManager.audioProvider = provider //For new but equal guild object
         }
     }
 
-    fun process(trackUrl: String, guild: IGuild, resultHandler: AudioLoadResultHandler): Future<Void> {
-        return playerManager.loadItemOrdered(getMetadata(guild), trackUrl, resultHandler)
+    fun process(trackUrl: String, guild: IGuild, resultHandler: AudioLoadResultHandler) {
+        playerManager.loadItemOrdered(getAudioMetadata(guild), trackUrl, resultHandler)
     }
 
     override fun close() = playerManager.shutdown()
-    fun removeMetadata(guild: IGuild): AudioMetadata? = metadata.remove(guild)
 }
