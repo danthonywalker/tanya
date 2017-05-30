@@ -21,6 +21,7 @@ import com.zaxxer.hikari.HikariDataSource
 import sx.blah.discord.api.ClientBuilder
 import sx.blah.discord.api.IDiscordClient
 import sx.blah.discord.modules.Configuration
+import technology.yockto.bc4d4j.impl.BC4D4J
 import technology.yockto.bc4d4j.impl.getCommandRegistry
 import technology.yockto.tanya.command.Command
 import technology.yockto.tanya.config.Config
@@ -62,7 +63,8 @@ object Tanya : AutoCloseable {
                 withToken(authorization.discordToken)
             }
         }.login()
-
+        
+        client.moduleLoader.loadModule(BC4D4J())
         client.getCommandRegistry().apply { //Automatically get / register commands
             ServiceLoader.load(Command::class.java).forEach(this::registerCommands)
         }
