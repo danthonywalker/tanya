@@ -26,12 +26,16 @@ import sx.blah.discord.handle.obj.IGuild
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IUser
 import sx.blah.discord.handle.obj.IVoiceChannel
+import sx.blah.discord.handle.obj.Permissions.ADMINISTRATOR
+import sx.blah.discord.util.EmbedBuilder
 import technology.yockto.bc4d4j.api.CommandContext
 import technology.yockto.bc4d4j.api.MainCommand
+import technology.yockto.bc4d4j.api.SubCommand
 import technology.yockto.tanya.Tanya
 import technology.yockto.tanya.audio.GuildAudioManager
 import technology.yockto.tanya.command.Command
 import technology.yockto.tanya.getRequestBuilder
+import java.awt.Color
 import java.sql.ResultSet
 import java.util.concurrent.ConcurrentHashMap
 
@@ -92,6 +96,77 @@ class MusicCommand : AudioEventAdapter(), Command {
             "music current", "music history", "music skip", "music voteskip", "music shuffle", "music play",
             "music pause", "music forward", "music rewind", "music seek", "music repeat", "music config"))
     fun musicCommand(context: CommandContext) {
+    }
+
+    @SubCommand(
+        name = "music enable",
+        aliases = arrayOf("enable", "start"),
+        permissions = arrayOf(ADMINISTRATOR))
+    fun musicEnable(context: CommandContext) {
+
+        val message = context.message
+        val client = message.client
+        val author = message.author
+        val guild = message.guild
+
+        val textChannel = message.channel
+        val firstVoiceChannel = guild.voiceChannels.getOrNull(0)
+        val connectedVoiceChannel = author.getVoiceStateForGuild(guild).channel
+        val voiceChannel: IVoiceChannel? = connectedVoiceChannel ?: firstVoiceChannel
+
+        //If voice channel is available attempt to start
+        client.getRequestBuilder(textChannel).doAction {
+
+            if(voiceChannel == null) {
+                EmbedBuilder().apply {
+                    withDescription("An error occurred while attempting to enable the " +
+                        "music module. Refer to the following for possible solutions:")
+
+                    appendField("1. Create a Voice Channel", "Create a voice channel " +
+                        "dedicated for playing music and retry this command.", false)
+                    appendField("2. Join a Voice Channel", "Join the voice channel " +
+                        "dedicated for playing music and retry this command.", false)
+
+                    val owner = client.applicationOwner
+                    withFooterText("If none of these solutions resolve the " +
+                        "issue contact ${owner.name}#${owner.discriminator}.")
+
+                    withTitle("Voice Channel Not Found")
+                    withColor(Color.RED)
+
+                    textChannel.sendMessage(build())
+                }
+            }
+
+            voiceChannel != null
+        }.andThen { //Automatically join the channel
+            voiceChannel!!.joinAndRegister() == Unit
+
+        }.andThen { //Insert/updates entry
+            Tanya.database.useConnection {
+                val sql = "{call music_configuration_insert(?, ?, ?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    it.setLong("g_id", guild.longID)
+                    it.setLong("v_id", voiceChannel!!.longID)
+                    it.setLong("t_id", textChannel.longID)
+                    !it.execute()
+                }
+            }
+
+        }.andThen {
+            EmbedBuilder().apply {
+                withDescription("Successfully enabled the music module for **${guild.name}**!")
+                withFooterText("Settings may be altered via the ~music config command.")
+                appendField("Voice Channel", voiceChannel!!.name, true)
+                appendField("Text Channel", textChannel.name, true)
+                withTitle("Music Module Enabled")
+                withColor(Color.GREEN)
+
+                textChannel.sendMessage(build())
+            } is EmbedBuilder
+        }.execute()
     }
 
     private fun IVoiceChannel.joinAndRegister() {

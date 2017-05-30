@@ -32,7 +32,7 @@ fun IChannel.sendMessage(exception: Exception): IMessage = EmbedBuilder().let {
     logger.info(exception, { "Sending message to IChannel ${this.longID}..." })
 
     val owner = client.applicationOwner
-    it.withDescription("An error has occurred! Contact ${owner.name}${owner.discriminator} " +
+    it.withDescription("An error has occurred! Contact ${owner.name}#${owner.discriminator} " +
         "if you do not recognize this error **and** may not know why it may have occurred.")
 
     it.appendField("Exception", exception.toString(), false)
