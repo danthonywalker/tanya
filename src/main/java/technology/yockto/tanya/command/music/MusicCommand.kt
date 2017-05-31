@@ -29,6 +29,8 @@ import mu.KLogging
 import org.apache.commons.lang3.time.DurationFormatUtils
 import sx.blah.discord.api.events.EventSubscriber
 import sx.blah.discord.handle.impl.events.ReadyEvent
+import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelLeaveEvent
+import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelMoveEvent
 import sx.blah.discord.handle.obj.IGuild
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IUser
@@ -41,11 +43,7 @@ import technology.yockto.bc4d4j.api.SubCommand
 import technology.yockto.tanya.Tanya
 import technology.yockto.tanya.audio.GuildAudioManager
 import technology.yockto.tanya.command.Command
-import technology.yockto.tanya.command.music.MusicPermission.ALLOW_STREAM
-import technology.yockto.tanya.command.music.MusicPermission.PLAY_REQUIRE_TEXT
-import technology.yockto.tanya.command.music.MusicPermission.PLAY_REQUIRE_VOICE
-import technology.yockto.tanya.command.music.MusicPermission.QUEUE_REQUIRE_TEXT
-import technology.yockto.tanya.command.music.MusicPermission.QUEUE_REQUIRE_VOICE
+import technology.yockto.tanya.command.music.MusicPermission.*
 import technology.yockto.tanya.getRequestBuilder
 import technology.yockto.tanya.sendMessage
 import technology.yockto.tanya.withFooterText
@@ -118,6 +116,45 @@ class MusicCommand : AudioEventAdapter(), Command {
                 }
             }
         }
+    }
+
+    @EventSubscriber
+    fun onUserVoiceChannelLeaveEvent(event: UserVoiceChannelLeaveEvent) {
+        val guild = event.guild //Skips / delete from the queue from user
+        val userTracks = event.user.getSongsInQueue(guild)
+
+        if(userTracks.isNotEmpty()) {
+            Tanya.database.useConnection {
+                val sql = "{call music_configuration_voice(?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    it.setLong("v_id", event.voiceChannel.longID)
+                    it.executeQuery().use {
+                        if(it.next()) {
+
+                            //Check if a guild forces the user to be in voice to hold status
+                            val permissions = it.getInt("permissions").getMusicPermissions()
+                            if(permissions.contains(REQUIRE_VOICE)) {
+
+                                val scheduler = guildAudioManager.getAudioMetadata(guild).scheduler
+                                userTracks.forEach { audioTrack ->
+
+                                    scheduler.remove(audioTrack)
+                                    trackMetadata.remove(audioTrack)
+                                    scheduler.takeIf { it.currentTrack == audioTrack }?.skip()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @EventSubscriber
+    fun onUserVoiceChannelMoveEvent(event: UserVoiceChannelMoveEvent) { //Both share behaviors
+        onUserVoiceChannelLeaveEvent(UserVoiceChannelLeaveEvent(event.oldChannel, event.user))
     }
 
     @MainCommand(
@@ -216,7 +253,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         val guild = message.guild
 
         Tanya.database.useConnection {
-            val sql = "{call music_configuration_channelPermissions(?)}"
+            val sql = "{call music_configuration_permissions(?)}"
             logger.info { "PrepareCall SQL: $sql" }
             it.prepareCall(sql).use {
 
@@ -254,7 +291,7 @@ class MusicCommand : AudioEventAdapter(), Command {
                                     "${nowPlayingInfo.author} as requested by ${trackMetadata[it]?.author?.name}") }
 
                                 val timeEst = queue.map { it.info.length }.sum() + (nowPlaying?.info?.length ?: 0)
-                                withTitle("Song Queue (${queue.size}) | (" + //Displays song counter and time left
+                                withTitle("Song Queue - (${queue.size}) | (EST: " + //Shows song counter/time left
                                     "${DurationFormatUtils.formatDuration(timeEst, "HH:mm:ss")})")
                                 withColor(Color.CYAN)
 

@@ -29,8 +29,8 @@ enum class MusicPermission(bitOffset: Int) {
     VOTESKIP_REQUIRE_TEXT(8),
     VOTESKIP_REQUIRE_VOICE(9),
 
-    ALLOW_STREAM(30),
-    REQUIRE_VOICE(31);
+    ALLOW_STREAM(29),
+    REQUIRE_VOICE(30);
 
     val value: Int = (1).shl(bitOffset)
     fun hasPermission(value: Int): Boolean = (value.and(this.value) > 0)
