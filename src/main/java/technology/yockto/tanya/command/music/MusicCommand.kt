@@ -17,11 +17,16 @@
  */
 package technology.yockto.tanya.command.music
 
+import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler
 import com.sedmelluq.discord.lavaplayer.player.event.AudioEventAdapter
+import com.sedmelluq.discord.lavaplayer.tools.FriendlyException
+import com.sedmelluq.discord.lavaplayer.track.AudioPlaylist
 import com.sedmelluq.discord.lavaplayer.track.AudioTrack
 import mu.KLogging
+import org.apache.commons.lang3.time.DurationFormatUtils
 import sx.blah.discord.api.events.EventSubscriber
 import sx.blah.discord.handle.impl.events.ReadyEvent
+import sx.blah.discord.handle.obj.IChannel
 import sx.blah.discord.handle.obj.IGuild
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IUser
@@ -34,10 +39,16 @@ import technology.yockto.bc4d4j.api.SubCommand
 import technology.yockto.tanya.Tanya
 import technology.yockto.tanya.audio.GuildAudioManager
 import technology.yockto.tanya.command.Command
+import technology.yockto.tanya.command.music.MusicPermission.ALLOW_STREAM
+import technology.yockto.tanya.command.music.MusicPermission.PLAY_REQUIRE_TEXT
+import technology.yockto.tanya.command.music.MusicPermission.PLAY_REQUIRE_VOICE
 import technology.yockto.tanya.getRequestBuilder
+import technology.yockto.tanya.sendMessage
+import technology.yockto.tanya.withFooterText
 import java.awt.Color
 import java.sql.ResultSet
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
 class MusicCommand : AudioEventAdapter(), Command {
     private val skipVoters = ConcurrentHashMap<IGuild, MutableSet<IUser>>()
@@ -91,11 +102,17 @@ class MusicCommand : AudioEventAdapter(), Command {
     @MainCommand(
         prefix = "~",
         name = "music",
+        deleteMessage = true,
         aliases = arrayOf("music"),
         subCommands = arrayOf("music help", "music enable", "music restart", "music disable", "music queue",
             "music current", "music history", "music skip", "music voteskip", "music shuffle", "music play",
             "music pause", "music forward", "music rewind", "music seek", "music repeat", "music config"))
     fun musicCommand(context: CommandContext) {
+
+        val attachmentUrl = context.message.attachments.getOrNull(0)?.url
+        val linkUrl = context.arguments.getOrNull(0)
+        val trackUrl = linkUrl ?: attachmentUrl
+        trackUrl?.let { play(it, context) }
     }
 
     @SubCommand(
@@ -127,11 +144,8 @@ class MusicCommand : AudioEventAdapter(), Command {
                     appendField("2. Join a Voice Channel", "Join the voice channel " +
                         "dedicated for playing music and retry this command.", false)
 
-                    val owner = client.applicationOwner
-                    withFooterText("If none of these solutions resolve the " +
-                        "issue contact ${owner.name}#${owner.discriminator}.")
-
                     withTitle("Voice Channel Not Found")
+                    withFooterText(client)
                     withColor(Color.RED)
 
                     textChannel.sendMessage(build())
@@ -169,12 +183,256 @@ class MusicCommand : AudioEventAdapter(), Command {
         }.execute()
     }
 
+    private fun play(trackUrl: String, context: CommandContext) {
+        val message = context.message
+        val textChannel = message.channel
+
+        val client = message.client
+        val author = message.author
+        val guild = message.guild
+
+        Tanya.database.useConnection {
+            val sql = "{call music_configuration_play(?)}"
+            logger.info { "PrepareCall SQL: $sql" }
+            it.prepareCall(sql).use {
+
+                it.setLong("g_id", guild.longID)
+                it.executeQuery().use {
+                    if(it.next()) {
+
+                        val voiceChannel = message.author.getVoiceStateForGuild(guild).channel
+                        val permissions = it.getInt("permissions").getMusicPermissions()
+                        val voiceChannelId = it.getLong("voice_id")
+                        val textChannelId = it.getLong("text_Id")
+
+                        if(permissions.contains(PLAY_REQUIRE_VOICE) && (voiceChannelId != voiceChannel?.longID)) {
+                            client.getRequestBuilder(textChannel).doAction { //User isn't in correct voice channel
+                                textChannel.sendInvalidVoiceChannelMessage() != null
+                            }.execute()
+
+                        } else if(permissions.contains(PLAY_REQUIRE_TEXT) && (textChannelId != textChannel.longID)) {
+                            client.getRequestBuilder(textChannel).doAction { //User used command in the wrong channel
+                                textChannel.sendInvalidTextChannelMessage() != null
+                            }.execute()
+
+                        } else {
+                            val scheduler = guildAudioManager.getAudioMetadata(guild).scheduler
+                            val fakeQueue = scheduler.queue //Copies original queue to validate
+
+                            val streamable = permissions.contains(ALLOW_STREAM)
+                            val playlistLimit = it.getInt("playlist_limit")
+                            val requestLimit = it.getInt("request_limit")
+                            val queueLimit = it.getInt("queue_limit")
+                            val timeLimit = it.getInt("time_limit")
+
+                            fun AudioTrack.isValid(): Boolean {
+                                if(!streamable && info.isStream) {
+                                    return false //Disable streams
+                                }
+
+                                val pastTimeLimit = TimeUnit.MILLISECONDS.toSeconds(info.length) > timeLimit
+                                if((timeLimit != -1) && !info.isStream && pastTimeLimit) {
+                                    return false //Ignore streams as they have high length
+                                }
+
+                                if((queueLimit != -1) && ((fakeQueue.size) + 1 > queueLimit)) {
+                                    return false //Simulates fakeQueue as if the song was added
+                                }
+
+                                if((requestLimit != -1) && (author.getSongsInQueue(guild).size + 1) > requestLimit) {
+                                    return false //Checks if user is going to request more song than they are allowed
+                                }
+
+                                return true
+                            }
+
+                            //Process the url, updating the queue if necessary, and responds to the user
+                            guildAudioManager.process(trackUrl, guild, object : AudioLoadResultHandler {
+
+                                override fun loadFailed(exception: FriendlyException) {
+                                    client.getRequestBuilder(textChannel).doAction {
+                                        textChannel.sendMessage(exception) is IMessage
+                                    }.execute()
+                                }
+
+                                override fun playlistLoaded(playlist: AudioPlaylist) {
+                                    val tracks = ArrayList<AudioTrack>(playlistLimit)
+                                    val playlistTracks = playlist.tracks
+                                    var successfulQueueCount = 0
+
+                                    var index = 0 //Keep iterating through playlist to find all valid tracks to play
+                                    while((index < playlistTracks.size) && (successfulQueueCount < playlistLimit)) {
+
+                                        val track = playlistTracks[index]
+                                        if(track.isValid()) { //Can be queued
+                                            trackMetadata.put(track, message)
+                                            successfulQueueCount++
+                                            fakeQueue.add(track)
+                                            tracks.add(track)
+                                        }
+
+                                        index++
+                                    }
+
+                                    client.getRequestBuilder(textChannel).doAction {
+                                        tracks.forEach { scheduler.play(it) } == Unit
+
+                                    }.andThen {
+                                        EmbedBuilder().apply {
+
+                                            appendField("Name", playlist.name, true)
+                                            appendField("Song Count", playlistTracks.size.toString(), true)
+
+                                            val playlistLength = playlistTracks.map { it.info.length }.sum()
+                                            appendField("Length", //Shows how much music is in the playlist.
+                                                DurationFormatUtils.formatDuration(playlistLength, "HH:mm:ss"), true)
+
+                                            appendField("Songs Queued", successfulQueueCount.toString(), true)
+
+                                            val songsQueuedLength = tracks.map { it.info.length }.sum()
+                                            appendField("Songs Queued Length", //Shows how much music was added to queue
+                                                DurationFormatUtils.formatDuration(songsQueuedLength, "HH:mm:ss"), true)
+
+                                            appendField("Requester", author.name, true)
+                                            appendField("Link", "<$trackUrl>", true)
+
+                                            withTitle("Successful Playlist Queue Request")
+                                            withColor(Color.GREEN)
+
+                                            textChannel.sendMessage(build())
+                                        } is EmbedBuilder
+                                    }.execute()
+                                }
+
+                                override fun trackLoaded(track: AudioTrack) {
+                                    if(track.isValid()) { //Can add the track
+                                        trackMetadata.put(track, message)
+                                        scheduler.play(track)
+
+                                        client.getRequestBuilder(textChannel).doAction {
+                                            EmbedBuilder().apply {
+
+                                                withTitle("Successful Queue Request")
+                                                appendAudioTrack(track)
+                                                withColor(Color.GREEN)
+
+                                                textChannel.sendMessage(build())
+                                            } is EmbedBuilder
+                                        }.execute()
+
+                                    } else { //Show user restrictions in place on server
+                                        client.getRequestBuilder(textChannel).doAction {
+                                            EmbedBuilder().apply {
+
+                                                val tText = if(timeLimit < 0) "Infinite" else "${timeLimit}s"
+                                                appendField("Time Limit", tText, true)
+
+                                                val qText = if(queueLimit < 0) "Infinite" else queueLimit.toString()
+                                                appendField("Queue Limit", qText, true)
+
+                                                val rText = if(requestLimit < 0) "Infinite" else requestLimit.toString()
+                                                appendField("Request Limit", rText, true)
+
+                                                appendField("Streamable", "This server ${if(streamable)
+                                                    "does" else "does not"} support streaming.", false)
+
+                                                withDescription("Ensure the audio is bounded by the restrictions " +
+                                                    "that are specifically configured for this server as detailed:")
+                                                withTitle("Queue Request Failed")
+                                                withColor(Color.RED)
+
+                                                textChannel.sendMessage(build())
+                                            } is EmbedBuilder
+                                        }.execute()
+                                    }
+                                }
+
+                                override fun noMatches() { //Invoked if not an audio
+                                    client.getRequestBuilder(textChannel).doAction {
+                                        EmbedBuilder().apply {
+
+                                            withDescription("Could not find audio data for <$trackUrl>. Check if " +
+                                                "the audio is from a supported source and/or in a supported format.")
+                                            withTitle("Audio Not Found")
+                                            withColor(Color.RED)
+
+                                            textChannel.sendMessage(build())
+                                        } is EmbedBuilder
+                                    }.execute()
+                                }
+                            })
+                        }
+
+                    } else { //No record indicates module is not enabled
+                        client.getRequestBuilder(textChannel).doAction {
+                            textChannel.sendModuleDisabledMessage() != null
+                        }.execute()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun IChannel.sendInvalidTextChannelMessage() = EmbedBuilder().let {
+        it.withDescription("An error occurred while attempting to process " +
+            "this command. Refer to the following for possible solutions:")
+
+        it.appendField("1. Use the Text Channel", "Retry this command " +
+            "in the text channel dedicated for music commands.", false)
+
+        it.withTitle("Invalid Text Channel")
+        it.withFooterText(client)
+        it.withColor(Color.RED)
+        sendMessage(it.build())
+    }
+
+    private fun IChannel.sendInvalidVoiceChannelMessage() = EmbedBuilder().let {
+        it.withDescription("An error occurred while attempting to process " +
+            "this command. Refer to the following for possible solutions:")
+
+        it.appendField("1. Join the Voice Channel", "Join the voice channel " +
+            "dedicated for playing music and retry this command.", false)
+
+        it.withTitle("Invalid Voice Channel")
+        it.withFooterText(client)
+        it.withColor(Color.RED)
+        sendMessage(it.build())
+    }
+
+    private fun IChannel.sendModuleDisabledMessage() = EmbedBuilder().let {
+        it.withDescription("The music module is currently disabled for **${guild.name}**! " +
+            "Contact an Administrator to enable the module via the *~music enable* command.")
+
+        it.withTitle("Music Module Disabled")
+        it.withColor(Color.RED)
+        sendMessage(it.build())
+    }
+
     private fun IVoiceChannel.joinAndRegister() {
         join() //Join voice channel and guarantee 1 listener instance
         val player = guildAudioManager.getAudioMetadata(guild).player
         player.removeListener(this@MusicCommand)
         player.addListener(this@MusicCommand)
     }
+
+    private fun EmbedBuilder.appendAudioTrack(track: AudioTrack): EmbedBuilder {
+        //All messages relating to AudioTrack should follow a very similar style
+        val trackInfo = track.info
+
+        appendField("Title", trackInfo.title, true)
+        appendField("Uploader", trackInfo.author, true)
+
+        appendField("Time Remaining", DurationFormatUtils.formatDuration(track.duration, "HH:mm:ss"), true)
+        appendField("Total Length", DurationFormatUtils.formatDuration(track.info.length, "HH:mm:ss"), true)
+        appendField("Requester", trackMetadata[track]?.author?.name.toString(), true)
+        appendField("Link", "<${trackInfo.uri}>", true)
+
+        return this
+    }
+
+    private fun IUser.getSongsInQueue(guild: IGuild) = trackMetadata.filterValues {
+        (it.author == this) && (it.guild == guild) //Gets songs from current guild.
+    }.keys
 
     private companion object : KLogging()
 }

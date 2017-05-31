@@ -43,6 +43,13 @@ fun IChannel.sendMessage(exception: Exception): IMessage = EmbedBuilder().let {
     sendMessage(it.build())
 }
 
+fun EmbedBuilder.withFooterText(client: IDiscordClient): EmbedBuilder {
+    val owner = client.applicationOwner //Owner can help debug
+    withFooterText("If none of these solutions resolve the " +
+        "issue contact ${owner.name}#${owner.discriminator}.")
+    return this
+}
+
 fun IDiscordClient.getRequestBuilder(channel: IChannel): RequestBuilder = getRequestBuilder().apply {
     onMissingPermissionsError { RequestBuffer.request { channel.sendMessage(it) } }
     onDiscordError { RequestBuffer.request { channel.sendMessage(it) } }

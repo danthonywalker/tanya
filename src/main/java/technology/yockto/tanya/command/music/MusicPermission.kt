@@ -29,8 +29,7 @@ enum class MusicPermission(bitOffset: Int) {
     VOTESKIP_REQUIRE_TEXT(8),
     VOTESKIP_REQUIRE_VOICE(9),
 
-    ALLOW_STREAM(29),
-    ALLOW_UPLOAD(30),
+    ALLOW_STREAM(30),
     REQUIRE_VOICE(31);
 
     val value: Int = (1).shl(bitOffset)
