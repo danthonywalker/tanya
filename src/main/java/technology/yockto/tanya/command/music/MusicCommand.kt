@@ -18,10 +18,13 @@
 package technology.yockto.tanya.command.music
 
 import com.sedmelluq.discord.lavaplayer.player.AudioLoadResultHandler
+import com.sedmelluq.discord.lavaplayer.player.AudioPlayer
 import com.sedmelluq.discord.lavaplayer.player.event.AudioEventAdapter
 import com.sedmelluq.discord.lavaplayer.tools.FriendlyException
 import com.sedmelluq.discord.lavaplayer.track.AudioPlaylist
 import com.sedmelluq.discord.lavaplayer.track.AudioTrack
+import com.sedmelluq.discord.lavaplayer.track.AudioTrackEndReason
+import com.sedmelluq.discord.lavaplayer.track.AudioTrackEndReason.LOAD_FAILED
 import mu.KLogging
 import org.apache.commons.lang3.time.DurationFormatUtils
 import sx.blah.discord.api.events.EventSubscriber
@@ -42,6 +45,8 @@ import technology.yockto.tanya.command.Command
 import technology.yockto.tanya.command.music.MusicPermission.ALLOW_STREAM
 import technology.yockto.tanya.command.music.MusicPermission.PLAY_REQUIRE_TEXT
 import technology.yockto.tanya.command.music.MusicPermission.PLAY_REQUIRE_VOICE
+import technology.yockto.tanya.command.music.MusicPermission.QUEUE_REQUIRE_TEXT
+import technology.yockto.tanya.command.music.MusicPermission.QUEUE_REQUIRE_VOICE
 import technology.yockto.tanya.getRequestBuilder
 import technology.yockto.tanya.sendMessage
 import technology.yockto.tanya.withFooterText
@@ -57,6 +62,23 @@ class MusicCommand : AudioEventAdapter(), Command {
 
     init { //Automatically registers class as listener
         Tanya.client.dispatcher.registerListener(this)
+    }
+
+    override fun onTrackEnd(player: AudioPlayer, track: AudioTrack, endReason: AudioTrackEndReason) {
+        trackMetadata.remove(track)?.takeUnless { endReason == LOAD_FAILED }?.let { message ->
+
+            Tanya.database.useConnection {
+                val sql = "{call music_history_insert(?, ?, ?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    it.setLong("g_id", message.guild.longID)
+                    it.setLong("u_id", message.author.longID)
+                    it.setString("t_url", track.info.uri)
+                    it.execute()
+                }
+            }
+        }
     }
 
     @EventSubscriber
@@ -110,7 +132,7 @@ class MusicCommand : AudioEventAdapter(), Command {
     fun musicCommand(context: CommandContext) {
 
         val attachmentUrl = context.message.attachments.getOrNull(0)?.url
-        val linkUrl = context.arguments.getOrNull(0)
+        val linkUrl = context.arguments.singleOrNull()
         val trackUrl = linkUrl ?: attachmentUrl
         trackUrl?.let { play(it, context) }
     }
@@ -183,6 +205,91 @@ class MusicCommand : AudioEventAdapter(), Command {
         }.execute()
     }
 
+    @SubCommand(
+        name = "music queue",
+        aliases = arrayOf("queue", "list"))
+    fun musicQueue(context: CommandContext) {
+
+        val message = context.message
+        val textChannel = message.channel
+
+        val client = message.client
+        val guild = message.guild
+
+        Tanya.database.useConnection {
+            val sql = "{call music_configuration_channelPermissions(?)}"
+            logger.info { "PrepareCall SQL: $sql" }
+            it.prepareCall(sql).use {
+
+                it.setLong("g_id", guild.longID)
+                it.executeQuery().use {
+                    if(it.next()) {
+
+                        val voiceChannel = message.author.getVoiceStateForGuild(guild).channel
+                        val permissions = it.getInt("permissions").getMusicPermissions()
+                        val voiceChannelId = it.getLong("voice_id")
+                        val textChannelId = it.getLong("text_id")
+
+                        if(permissions.contains(QUEUE_REQUIRE_VOICE) && (voiceChannelId != voiceChannel?.longID)) {
+                            client.getRequestBuilder(textChannel).doAction { //User is not in correct voice channel
+                                textChannel.sendInvalidVoiceChannelMessage() != null
+                            }.execute()
+
+                        } else if(permissions.contains(QUEUE_REQUIRE_TEXT) && (textChannelId != textChannel.longID)) {
+                            client.getRequestBuilder(textChannel).doAction { //User used command in the wrong channel.
+                                textChannel.sendInvalidTextChannelMessage() != null
+                            }.execute()
+
+                        } else { //Get scheduler data as it may mutate if request gets buffered
+                            val scheduler = guildAudioManager.getAudioMetadata(guild).scheduler
+                            val nowPlaying = scheduler.currentTrack
+                            val nowPlayingInfo = nowPlaying?.info
+                            val queue = scheduler.queue
+
+                            client.getRequestBuilder(textChannel).doAction {
+                                EmbedBuilder().apply {
+                                    setLenient(true)
+
+                                    if(queue.isEmpty()) { //Minimizes post if no songs are available
+                                        withFooterText("There are currently no songs in the queue!")
+
+                                    } else { //Print out as many fields as possible
+                                        queue.forEachIndexed { index, audioTrack ->
+                                            val info = audioTrack.info
+                                            val uploader = info.author
+                                            val title = info.title
+
+                                            val requester = trackMetadata[audioTrack]?.author?.name
+                                            val length = DurationFormatUtils.formatDuration(info.length, "HH:mm:ss")
+
+                                            appendField("${index + 1}: $title", "```\nUploader:  $uploader" +
+                                                "\nLength:    $length\nRequester: $requester```", false)
+                                        }
+                                    }
+
+                                    nowPlaying?.let { withDescription("Now Playing: ${nowPlayingInfo!!.title} by " +
+                                        "${nowPlayingInfo.author} as requested by ${trackMetadata[it]?.author?.name}") }
+
+                                    val timeEst = queue.map { it.info.length }.sum() + (nowPlaying?.info?.length ?: 0)
+                                    withTitle("Song Queue (${queue.size}) | (" + //Displays song counter and time left
+                                        "${DurationFormatUtils.formatDuration(timeEst, "HH:mm:ss")})")
+                                    withColor(Color.CYAN)
+
+                                    textChannel.sendMessage(build())
+                                } is EmbedBuilder
+                            }.execute()
+                        }
+
+                    } else { //No record indicates module is not enabled
+                        client.getRequestBuilder(textChannel).doAction {
+                            textChannel.sendModuleDisabledMessage() != null
+                        }.execute()
+                    }
+                }
+            }
+        }
+    }
+
     private fun play(trackUrl: String, context: CommandContext) {
         val message = context.message
         val textChannel = message.channel
@@ -200,8 +307,8 @@ class MusicCommand : AudioEventAdapter(), Command {
                 it.executeQuery().use {
                     if(it.next()) {
 
-                        val voiceChannel = message.author.getVoiceStateForGuild(guild).channel
                         val permissions = it.getInt("permissions").getMusicPermissions()
+                        val voiceChannel = author.getVoiceStateForGuild(guild).channel
                         val voiceChannelId = it.getLong("voice_id")
                         val textChannelId = it.getLong("text_Id")
 
@@ -422,8 +529,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         appendField("Title", trackInfo.title, true)
         appendField("Uploader", trackInfo.author, true)
 
-        appendField("Time Remaining", DurationFormatUtils.formatDuration(track.duration, "HH:mm:ss"), true)
-        appendField("Total Length", DurationFormatUtils.formatDuration(track.info.length, "HH:mm:ss"), true)
+        appendField("Length", DurationFormatUtils.formatDuration(track.info.length, "HH:mm:ss"), true)
         appendField("Requester", trackMetadata[track]?.author?.name.toString(), true)
         appendField("Link", "<${trackInfo.uri}>", true)
 
