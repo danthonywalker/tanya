@@ -132,7 +132,7 @@ class MusicCommand : AudioEventAdapter(), Command {
                 logger.info { "PrepareCall SQL: $sql" }
                 it.prepareCall(sql).use {
 
-                    it.setLong("v_id", event.voiceChannel.longID)
+                    it.setLong("g_id", guild.longID)
                     it.executeQuery().use {
                         if(it.next()) {
 
@@ -333,6 +333,48 @@ class MusicCommand : AudioEventAdapter(), Command {
                                 val timeEst = queue.map { it.info.length }.sum() + (nowPlaying?.info?.length ?: 0)
                                 withTitle("Song Queue - (${queue.size}) | (EST: " + //Shows song counter/time left
                                     "${DurationFormatUtils.formatDuration(timeEst, "HH:mm:ss")})")
+                                withColor(Color.CYAN)
+
+                                textChannel.sendMessage(build())
+                            } is EmbedBuilder
+                        }.execute()
+                    }
+                }
+            }
+        }
+    }
+
+    @SubCommand(
+        name = "music current",
+        aliases = arrayOf("current", "song"))
+    fun musicCurrent(context: CommandContext) {
+
+        val message = context.message
+        val textChannel = message.channel
+        val guild = message.guild
+
+        Tanya.database.useConnection {
+            val sql = "{call music_configuration_permissions(?)}"
+            logger.info { "PrepareCall SQL: $sql" }
+            it.prepareCall(sql).use {
+
+                it.setLong("g_id", guild.longID)
+                it.executeQuery().use {
+
+                    if(it.validate(message, CURRENT_REQUIRE_TEXT, CURRENT_REQUIRE_VOICE)) {
+                        val scheduler = guildAudioManager.getAudioMetadata(guild).scheduler
+
+                        message.client.getRequestBuilder(textChannel).doAction {
+                            val nowPlaying = scheduler.currentTrack
+                            EmbedBuilder().apply {
+
+                                if(nowPlaying == null) { //User could ask for non-playing
+                                    withFooterText("There is no song currently playing!")
+                                } else { //Uses standard format.
+                                    appendAudioTrack(nowPlaying)
+                                }
+
+                                withTitle("Now Playing")
                                 withColor(Color.CYAN)
 
                                 textChannel.sendMessage(build())
