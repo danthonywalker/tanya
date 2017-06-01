@@ -245,6 +245,43 @@ class MusicCommand : AudioEventAdapter(), Command {
     }
 
     @SubCommand(
+        name = "music disable",
+        aliases = arrayOf("disable"),
+        permissions = arrayOf(MANAGE_SERVER))
+    fun musicDisable(context: CommandContext) {
+
+        val message = context.message
+        val textChannel = message.channel
+        val guild = message.guild
+
+        message.client.getRequestBuilder(textChannel).doAction {
+            guild.connectedVoiceChannel?.leave() != null
+
+        }.andThen { //Removes all settings
+            Tanya.database.useConnection {
+                val sql = "{call music_configuration_delete(?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    it.setLong("g_id", guild.longID)
+                    !it.execute()
+                }
+            }
+
+        }.andThen {
+            EmbedBuilder().apply {
+
+                withDescription("The music module has been disabled for **${guild.name}**! All previous " +
+                    "settings have been erased. To re-enable the module, use the *~music enable* command.")
+                withTitle("Music Module Disabled")
+                withColor(Color.YELLOW)
+
+                textChannel.sendMessage(build())
+            } is EmbedBuilder
+        }.execute()
+    }
+
+    @SubCommand(
         name = "music queue",
         aliases = arrayOf("queue", "list"))
     fun musicQueue(context: CommandContext) {
@@ -363,16 +400,12 @@ class MusicCommand : AudioEventAdapter(), Command {
                                     }
 
                                     fun onMessageReceivedEvent(event: MessageReceivedEvent) {
-                                        if(scheduler.currentTrack == currentSong) {
-                                            val eventMessage = event.message
-                                            val voter = event.author
+                                        if(shouldProcessEvent() && (event.channel.longID == textChannel.longID)) {
+                                            val voter = event.author //Checks if the user is even allowed to vote.
+                                            voter.takeIf { users?.contains(voter) == true }?.let {
 
-                                            val inChannel = event.channel.longID == textChannel.longID
-                                            val inVoice = users?.contains(voter) == true
-                                            voter.takeIf { inChannel && inVoice }?.let {
-
-                                                when(eventMessage.content) {
-                                                    "voteyes" -> { //A voter
+                                                when(event.message.content) {
+                                                    "voteyes" -> { //Add vote
                                                         voters!!.add(it)
                                                         calculateCurrentThreshold()
                                                     }
@@ -383,16 +416,12 @@ class MusicCommand : AudioEventAdapter(), Command {
                                                     }
                                                 }
                                             }
-
-                                        } else { //Song has changed so end vote
-                                            dispatcher.unregisterListener(this)
-                                            skipVoters.remove(guild)
                                         }
                                     }
 
                                     fun onUserVoiceChannelLeaveEvent(event: UserVoiceChannelLeaveEvent) {
-                                        if(event.voiceChannel.longID == voiceChannelId) {
-                                            //Recalculate the threshold if someone leaves
+                                        if(shouldProcessEvent() && (event.voiceChannel.longID == voiceChannelId)) {
+
                                             voters!!.remove(event.user)
                                             calculateCurrentThreshold()
                                         }
@@ -422,9 +451,21 @@ class MusicCommand : AudioEventAdapter(), Command {
                                                 textChannel.sendMessage(build())
                                             } is EmbedBuilder
 
-                                        }.andThen {
-                                            skip //If true the current song gets skipped
-                                        }.andThen { scheduler.skip() != null }.execute()
+                                        }.andThen { skip }.andThen {
+                                            unregisterTempListener()
+                                            scheduler.skip() != null
+                                        }.execute()
+                                    }
+
+                                    private fun shouldProcessEvent(): Boolean {
+                                        val songChanged = scheduler.currentTrack != currentSong
+                                        takeIf { songChanged }?.unregisterTempListener()
+                                        return !songChanged
+                                    }
+
+                                    private fun unregisterTempListener() {
+                                        dispatcher.unregisterListener(this)
+                                        skipVoters.remove(guild)
                                     }
                                 })
 
