@@ -27,15 +27,18 @@ import com.sedmelluq.discord.lavaplayer.track.AudioTrackEndReason
 import com.sedmelluq.discord.lavaplayer.track.AudioTrackEndReason.LOAD_FAILED
 import mu.KLogging
 import org.apache.commons.lang3.time.DurationFormatUtils
+import sx.blah.discord.api.events.Event
 import sx.blah.discord.api.events.EventSubscriber
+import sx.blah.discord.api.events.IListener
 import sx.blah.discord.handle.impl.events.ReadyEvent
+import sx.blah.discord.handle.impl.events.guild.channel.message.MessageReceivedEvent
 import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelLeaveEvent
 import sx.blah.discord.handle.impl.events.guild.voice.user.UserVoiceChannelMoveEvent
 import sx.blah.discord.handle.obj.IGuild
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IUser
 import sx.blah.discord.handle.obj.IVoiceChannel
-import sx.blah.discord.handle.obj.Permissions.ADMINISTRATOR
+import sx.blah.discord.handle.obj.Permissions.MANAGE_SERVER
 import sx.blah.discord.util.EmbedBuilder
 import technology.yockto.bc4d4j.api.CommandContext
 import technology.yockto.bc4d4j.api.MainCommand
@@ -176,7 +179,7 @@ class MusicCommand : AudioEventAdapter(), Command {
     @SubCommand(
         name = "music enable",
         aliases = arrayOf("enable", "start"),
-        permissions = arrayOf(ADMINISTRATOR))
+        permissions = arrayOf(MANAGE_SERVER))
     fun musicEnable(context: CommandContext) {
 
         val message = context.message
@@ -301,6 +304,160 @@ class MusicCommand : AudioEventAdapter(), Command {
                     }
                 }
             }
+        }
+    }
+
+    @SubCommand(
+        name = "music voteskip",
+        aliases = arrayOf("voteskip"))
+    fun musicVoteSkip(context: CommandContext) {
+
+        val message = context.message
+        val textChannel = message.channel
+
+        val client = message.client
+        val guild = message.guild
+
+        var voters = skipVoters.putIfAbsent(guild, ConcurrentHashMap.newKeySet())
+        if(voters == null) { //If null then there was no voteskip so make new one
+
+            Tanya.database.useConnection {
+                val sql = "{call music_configuration_voteskip(?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    it.setLong("g_id", guild.longID)
+                    it.executeQuery().use {
+
+                        if(it.validate(message, VOTESKIP_REQUIRE_TEXT, VOTESKIP_REQUIRE_VOICE)) {
+                            val scheduler = guildAudioManager.getAudioMetadata(guild).scheduler
+                            val skipThreshold = it.getByte("skip_threshold").toInt()
+                            val voiceChannelId = it.getLong("voice_id")
+                            val currentSong = scheduler.currentTrack
+
+                            if(skipThreshold == -1) { //Guild disabled voteskip.
+                                client.getRequestBuilder(textChannel).doAction {
+                                    EmbedBuilder().apply {
+
+                                        withDescription("Vote skip is currently disabled for this server. Ask " +
+                                            "an Administrator to change this via the *~music config* command.")
+                                        withTitle("Vote Skip Disabled")
+                                        withColor(Color.RED)
+
+                                        textChannel.sendMessage(build())
+                                    } is EmbedBuilder
+                                }.execute()
+
+                            } else if(currentSong != null) {
+                                voters = skipVoters[guild]!!
+                                val dispatcher = client.dispatcher
+
+                                dispatcher.registerListener(object : IListener<Event> { //Annotations don't work
+                                    val users get() = client.getVoiceChannelByID(voiceChannelId)?.connectedUsers
+
+                                    override fun handle(event: Event) = when(event) {
+                                        is UserVoiceChannelLeaveEvent -> onUserVoiceChannelLeaveEvent(event)
+                                        is UserVoiceChannelMoveEvent -> onUserVoiceChannelMoveEvent(event)
+                                        is MessageReceivedEvent -> onMessageReceivedEvent(event)
+                                        else -> { /* Ignored */ }
+                                    }
+
+                                    fun onMessageReceivedEvent(event: MessageReceivedEvent) {
+                                        if(scheduler.currentTrack == currentSong) {
+                                            val eventMessage = event.message
+                                            val voter = event.author
+
+                                            val inChannel = event.channel.longID == textChannel.longID
+                                            val inVoice = users?.contains(voter) == true
+                                            voter.takeIf { inChannel && inVoice }?.let {
+
+                                                when(eventMessage.content) {
+                                                    "voteyes" -> { //A voter
+                                                        voters!!.add(it)
+                                                        calculateCurrentThreshold()
+                                                    }
+
+                                                    "voteno" -> { //Removes
+                                                        voters!!.remove(it)
+                                                        calculateCurrentThreshold()
+                                                    }
+                                                }
+                                            }
+
+                                        } else { //Song has changed so end vote
+                                            dispatcher.unregisterListener(this)
+                                            skipVoters.remove(guild)
+                                        }
+                                    }
+
+                                    fun onUserVoiceChannelLeaveEvent(event: UserVoiceChannelLeaveEvent) {
+                                        if(event.voiceChannel.longID == voiceChannelId) {
+                                            //Recalculate the threshold if someone leaves
+                                            voters!!.remove(event.user)
+                                            calculateCurrentThreshold()
+                                        }
+                                    }
+
+                                    fun onUserVoiceChannelMoveEvent(event: UserVoiceChannelMoveEvent) {
+                                        val voiceEvent = UserVoiceChannelLeaveEvent(event.oldChannel, event.user)
+                                        onUserVoiceChannelLeaveEvent(voiceEvent) //Act as if the user really left
+                                    }
+
+                                    private fun calculateCurrentThreshold() {
+                                        val votersSize = voters!!.size.toDouble()
+                                        val usersSize = (users?.size?.toDouble() ?: 2.0) - 1
+                                        val currentThreshold = (votersSize / usersSize) * 100
+                                        val skip = currentThreshold >= skipThreshold
+
+                                        client.getRequestBuilder(textChannel).doAction {
+                                            EmbedBuilder().apply {
+
+                                                appendField("Voted Users", "${votersSize.toInt()}", true)
+                                                appendField("Users in Voice", "${usersSize.toInt()}", true)
+                                                appendField("Threshold", "${currentThreshold.toInt()}%", true)
+                                                takeIf { skip }?.withFooterText("Skipping current song...")
+                                                withTitle("Vote Skip Status")
+                                                withColor(Color.WHITE)
+
+                                                textChannel.sendMessage(build())
+                                            } is EmbedBuilder
+
+                                        }.andThen {
+                                            skip //If true the current song gets skipped
+                                        }.andThen { scheduler.skip() != null }.execute()
+                                    }
+                                })
+
+                                client.getRequestBuilder(textChannel).doAction {
+                                    EmbedBuilder().apply {
+
+                                        withDescription("A vote to skip the currently playing song has been " +
+                                            "initiated! Type either `voteyes` or `voteno` in this channel to " +
+                                            "vote. Vote will be determined by a $skipThreshold% \"yes\" threshold.")
+                                        withTitle("Vote Skip Initiated")
+                                        withColor(Color.WHITE)
+
+                                        textChannel.sendMessage(build())
+                                    } is EmbedBuilder
+                                }.execute()
+                            }
+                        }
+                    }
+                }
+            }
+
+        } else { //Display to the user to use current voting
+            client.getRequestBuilder(textChannel).doAction {
+                EmbedBuilder().apply {
+
+                    withDescription("A vote to skip the current song is already in progress! To vote, " +
+                        "either enter `voteyes` or `voteno` in the channel the vote was initiated!")
+                    withTitle("Vote Skip In Progress")
+                    withColor(Color.YELLOW)
+
+                    textChannel.sendMessage(build())
+                } is EmbedBuilder
+            }.execute()
         }
     }
 
