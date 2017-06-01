@@ -24,6 +24,7 @@ import sx.blah.discord.handle.obj.IGuild
 import technology.yockto.tanya.config.Config
 import technology.yockto.tanya.json.getJsonFile
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Future
 
 class GuildAudioManager : AutoCloseable {
     private val metadata = ConcurrentHashMap<IGuild, AudioMetadata>()
@@ -48,8 +49,9 @@ class GuildAudioManager : AutoCloseable {
         }
     }
 
-    fun process(trackUrl: String, guild: IGuild, resultHandler: AudioLoadResultHandler) {
-        playerManager.loadItemOrdered(getAudioMetadata(guild), trackUrl, resultHandler)
+    fun process(trackUrl: String, guild: IGuild, resultHandler: AudioLoadResultHandler): Future<Void> {
+        //Since AudioMetadata is guaranteed to be unique for physical guilds it will load sequentially.
+        return playerManager.loadItemOrdered(getAudioMetadata(guild), trackUrl, resultHandler)
     }
 
     override fun close() = playerManager.shutdown()

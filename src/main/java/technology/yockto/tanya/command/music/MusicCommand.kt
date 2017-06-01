@@ -387,6 +387,101 @@ class MusicCommand : AudioEventAdapter(), Command {
     }
 
     @SubCommand(
+        name = "music history",
+        aliases = arrayOf("history", "past"))
+    fun musicHistory(context: CommandContext) {
+
+        val message = context.message
+        val textChannel = message.channel
+
+        val client = message.client
+        val guild = message.guild
+
+        Tanya.database.useTransaction {
+            val musicHistoryIds = mutableSetOf<Int>()
+            var sql = "{call music_history_retrieve(?)}"
+            logger.info { "PrepareCall SQL w/ TYPE_SCROLL_INSENSITIVE and CONCUR_READ_ONLY: $sql" }
+            it.prepareCall(sql, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY).use {
+
+                it.setLong("g_id", guild.longID)
+                it.executeQuery().use {
+                    if(it.next()) {
+
+                        it.absolute(0) //Music is enabled so this won't send that error message
+                        if(it.validate(message, HISTORY_REQUIRE_TEXT, HISTORY_REQUIRE_VOICE)) {
+
+                            var appendCounter = 0
+                            textChannel.typingStatus = true
+                            val embedBuilder = EmbedBuilder().apply {
+                                do { //Go ahead and compute first row
+
+                                    val musicId = it.getInt("id")
+                                    val userId = it.getLong("user_id")
+                                    val trackUrl = it.getString("track_url")
+
+                                    guildAudioManager.process(trackUrl, guild, object : AudioLoadResultHandler {
+                                        override fun loadFailed(exception: FriendlyException) {
+                                            logger.info(exception, { "Failed to load history" })
+                                            musicHistoryIds.add(musicId)
+                                        }
+
+                                        override fun playlistLoaded(playlist: AudioPlaylist) {
+                                            throw IllegalStateException("No playlist allowed")
+                                        }
+
+                                        override fun trackLoaded(track: AudioTrack) {
+                                            if(appendCounter < EmbedBuilder.FIELD_COUNT_LIMIT) {
+
+                                                val info = track.info
+                                                val title = info.title
+                                                val uploader = info.author
+                                                val requester = client.getUserByID(userId)?.name
+                                                val length = DurationFormatUtils.formatDuration(info.length, "HH:mm:ss")
+
+                                                appendField("${++appendCounter}: $title", "```\nUploader:  $uploader" +
+                                                    "$\nLength:    $length\nRequester: $requester```", false)
+
+                                            } else { //Impossible to display
+                                                musicHistoryIds.add(musicId)
+                                            }
+                                        }
+
+                                        override fun noMatches() = musicHistoryIds.add(musicId).let {}
+                                    }).get() //Waits for ResultHandler to finish before going forward.
+                                } while(it.next())
+
+                                withColor(Color.CYAN)
+                                withTitle("Song History - ($appendCounter)")
+                                takeIf { appendCounter == 0 }?.withFooterText("No history to display!")
+                            }
+
+                            client.getRequestBuilder(textChannel).doAction {
+                                textChannel.typingStatus = false //Bot not processing
+                                textChannel.sendMessage(embedBuilder.build()) != null
+                            }.execute()
+                        }
+                    }
+                }
+            }
+
+            if(musicHistoryIds.isNotEmpty()) {
+                sql = "{call music_history_delete(?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    //Bundle delete for one command
+                    musicHistoryIds.forEach { id ->
+                        it.setInt("m_id", id)
+                        it.addBatch()
+                    }
+
+                    it.execute()
+                }
+            }
+        }
+    }
+
+    @SubCommand(
         name = "music voteskip",
         aliases = arrayOf("voteskip"))
     fun musicVoteSkip(context: CommandContext) {
