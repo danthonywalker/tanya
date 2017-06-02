@@ -168,7 +168,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         deleteMessage = true,
         aliases = arrayOf("music"),
         usage = "~music <link | attachment>",
-        description = "Plays music provided either by a link or an attachment.",
+        description = "Plays music via link or attachment.",
         subCommands = arrayOf("music help", "music enable", "music restart", "music disable", "music queue",
             "music current", "music history", "music skip", "music voteskip", "music shuffle", "music play",
             "music pause", "music forward", "music rewind", "music seek", "music repeat", "music config"))
@@ -186,7 +186,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music help",
         usage = "~music help",
         aliases = arrayOf("help"),
-        description = "Displays all commands related to music.")
+        description = "Displays the help menu.")
     fun musicHelp(context: CommandContext): Unit = help(context)
 
     @SubCommand(
@@ -194,7 +194,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         usage = "\\* ~music enable",
         aliases = arrayOf("enable", "start"),
         permissions = arrayOf(MANAGE_SERVER),
-        description = "Enables the music module for this server.")
+        description = "Enables the music module.")
     fun musicEnable(context: CommandContext) {
 
         val message = context.message
@@ -264,7 +264,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         usage = "\\* ~music disable",
         aliases = arrayOf("disable"),
         permissions = arrayOf(MANAGE_SERVER),
-        description = "Disables the music module for this server.")
+        description = "Disables the music module.")
     fun musicDisable(context: CommandContext) {
 
         val message = context.message
@@ -302,7 +302,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music queue",
         usage = "~music queue",
         aliases = arrayOf("queue", "list"),
-        description = "Displays all the songs currently in the queue.")
+        description = "Displays the songs in queue.")
     fun musicQueue(context: CommandContext) {
 
         val message = context.message
@@ -367,7 +367,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music current",
         usage = "~music current",
         aliases = arrayOf("current", "song"),
-        description = "Displays detailed information about the current playing song.")
+        description = "Displays the current playing song.")
     fun musicCurrent(context: CommandContext) {
 
         val message = context.message
@@ -411,7 +411,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music history",
         usage = "~music history",
         aliases = arrayOf("history", "past"),
-        description = "Displays songs that have already been played.")
+        description = "Displays the song history.")
     fun musicHistory(context: CommandContext) {
 
         val message = context.message
@@ -462,7 +462,7 @@ class MusicCommand : AudioEventAdapter(), Command {
                                                 val length = DurationFormatUtils.formatDuration(info.length, "HH:mm:ss")
 
                                                 appendField("${++appendCounter}: $title", "```\nUploader:  $uploader" +
-                                                    "$\nLength:    $length\nRequester: $requester```", false)
+                                                    "\nLength:    $length\nRequester: $requester```", false)
 
                                             } else { //Impossible to display
                                                 musicHistoryIds.add(musicId)
@@ -508,7 +508,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music skip",
         aliases = arrayOf("skip"),
         usage = "\\*\\* ~music skip",
-        description = "Immediately skips the currently playing song.")
+        description = "Force skips the current playing song.")
     fun musicSkip(context: CommandContext) {
 
         val message = context.message
@@ -537,7 +537,7 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music voteskip",
         usage = "~music voteskip",
         aliases = arrayOf("voteskip"),
-        description = "Initiates a vote to skip the currently playing song.")
+        description = "Vote to skip the current playing song.")
     fun musicVoteSkip(context: CommandContext) {
 
         val message = context.message
@@ -702,9 +702,9 @@ class MusicCommand : AudioEventAdapter(), Command {
         client.getRequestBuilder(textChannel).doAction {
             EmbedBuilder().apply {
 
-                appendField(mainCommand.usage, mainCommand.description, false)
-                client.getCommandRegistry().getSubCommands(mainCommand).forEach {
-                    appendField(it.usage, it.description, false) //Unordered list
+                appendField(mainCommand.usage, mainCommand.description, true)
+                client.getCommandRegistry().getSubCommands(mainCommand).sortedBy { it.name }.forEach {
+                    appendField(it.usage, it.description, true) //Commands will come out in same order
                 }
 
                 appendField("Footnotes", "[\\*] Only those with the Manage Server permission " +
