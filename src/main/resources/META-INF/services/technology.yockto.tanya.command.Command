@@ -16,3 +16,4 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 technology.yockto.tanya.command.music.MusicCommand
+technology.yockto.tanya.command.status.StatusCommand
