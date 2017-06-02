@@ -29,6 +29,10 @@ enum class MusicPermission(bitOffset: Int) {
     VOTESKIP_REQUIRE_TEXT(8),
     VOTESKIP_REQUIRE_VOICE(9),
 
+    SKIP_REQUIRE_TEXT(10),
+    PAUSE_REQUIRE_TEXT(11),
+    RESUME_REQUIRE_TEXT(12),
+
     ALLOW_STREAM(29),
     REQUIRE_VOICE(30);
 

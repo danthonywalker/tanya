@@ -38,6 +38,7 @@ import sx.blah.discord.handle.obj.IGuild
 import sx.blah.discord.handle.obj.IMessage
 import sx.blah.discord.handle.obj.IUser
 import sx.blah.discord.handle.obj.IVoiceChannel
+import sx.blah.discord.handle.obj.Permissions.MANAGE_CHANNEL
 import sx.blah.discord.handle.obj.Permissions.MANAGE_SERVER
 import sx.blah.discord.util.EmbedBuilder
 import technology.yockto.bc4d4j.api.CommandContext
@@ -504,6 +505,35 @@ class MusicCommand : AudioEventAdapter(), Command {
     }
 
     @SubCommand(
+        name = "music skip",
+        aliases = arrayOf("skip"),
+        usage = "\\*\\* ~music skip",
+        description = "Immediately skips the currently playing song.")
+    fun musicSkip(context: CommandContext) {
+
+        val message = context.message
+        val textChannel = message.channel
+
+        if(message.validate(SKIP_REQUIRE_TEXT)) { //May require the user to use in chat
+            val scheduler = guildAudioManager.getAudioMetadata(message.guild).scheduler
+
+            message.client.getRequestBuilder(textChannel).doAction {
+                EmbedBuilder().apply {
+
+                    withDescription("Skipping the current song...")
+                    withTitle("Force Skip")
+                    withColor(Color.WHITE)
+
+                    textChannel.sendMessage(build())
+                } is EmbedBuilder
+
+            }.andThen { //Force the skip
+                scheduler.skip() != null
+            }.execute()
+        }
+    }
+
+    @SubCommand(
         name = "music voteskip",
         usage = "~music voteskip",
         aliases = arrayOf("voteskip"),
@@ -677,8 +707,9 @@ class MusicCommand : AudioEventAdapter(), Command {
                     appendField(it.usage, it.description, false) //Unordered list
                 }
 
-                withFooterText("[*] Only those with the Manage " +
-                    "Server permission may use this command.")
+                appendField("Footnotes", "[\\*] Only those with the Manage Server permission " +
+                    "may use this command.\n[\\*\\*] Only those with the Manage Channel " +
+                    "permission and/or the song requester may use this command.", false)
                 withTitle("Music Help Menu")
                 withColor(Color.PINK)
 
@@ -881,7 +912,28 @@ class MusicCommand : AudioEventAdapter(), Command {
         (it.author == this) && (it.guild == guild) //Gets songs from current guild.
     }.keys
 
-    private fun ResultSet.validate(message: IMessage, text: MusicPermission, voice: MusicPermission): Boolean {
+    private fun IMessage.validate(permission: MusicPermission): Boolean {
+        val scheduler = guildAudioManager.getAudioMetadata(guild).scheduler
+        val metadata = trackMetadata[scheduler.currentTrack]
+
+        val hasPermission = channel.getModifiedPermissions(author).contains(MANAGE_CHANNEL)
+        if((metadata != null) && ((author == metadata.author) || hasPermission)) {
+
+            return Tanya.database.useConnection {
+                val sql = "{call music_configuration_permissions(?)}"
+                logger.info { "PrepareCall SQL: $sql" }
+                it.prepareCall(sql).use {
+
+                    it.setLong("g_id", guild.longID)
+                    it.executeQuery().use { it.validate(this, permission, null) }
+                }
+            }
+        }
+
+        return false
+    }
+
+    private fun ResultSet.validate(message: IMessage, text: MusicPermission, voice: MusicPermission?): Boolean {
         val textChannel = message.channel
         val client = message.client
         val guild = message.guild
