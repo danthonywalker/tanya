@@ -43,6 +43,7 @@ import sx.blah.discord.util.EmbedBuilder
 import technology.yockto.bc4d4j.api.CommandContext
 import technology.yockto.bc4d4j.api.MainCommand
 import technology.yockto.bc4d4j.api.SubCommand
+import technology.yockto.bc4d4j.impl.getCommandRegistry
 import technology.yockto.tanya.Tanya
 import technology.yockto.tanya.audio.GuildAudioManager
 import technology.yockto.tanya.command.Command
@@ -165,21 +166,34 @@ class MusicCommand : AudioEventAdapter(), Command {
         name = "music",
         deleteMessage = true,
         aliases = arrayOf("music"),
+        usage = "~music <link | attachment>",
+        description = "Plays music provided either by a link or an attachment.",
         subCommands = arrayOf("music help", "music enable", "music restart", "music disable", "music queue",
             "music current", "music history", "music skip", "music voteskip", "music shuffle", "music play",
             "music pause", "music forward", "music rewind", "music seek", "music repeat", "music config"))
     fun musicCommand(context: CommandContext) {
 
-        val attachmentUrl = context.message.attachments.getOrNull(0)?.url
+        val attachmentUrl = context.message.attachments.singleOrNull()?.url
         val linkUrl = context.arguments.singleOrNull()
         val trackUrl = linkUrl ?: attachmentUrl
-        trackUrl?.let { play(it, context) }
+
+        //Play if a valid trackUrl, else just print out help
+        trackUrl?.let { play(it, context) } ?: help(context)
     }
 
     @SubCommand(
+        name = "music help",
+        usage = "~music help",
+        aliases = arrayOf("help"),
+        description = "Displays all commands related to music.")
+    fun musicHelp(context: CommandContext): Unit = help(context)
+
+    @SubCommand(
         name = "music enable",
+        usage = "\\* ~music enable",
         aliases = arrayOf("enable", "start"),
-        permissions = arrayOf(MANAGE_SERVER))
+        permissions = arrayOf(MANAGE_SERVER),
+        description = "Enables the music module for this server.")
     fun musicEnable(context: CommandContext) {
 
         val message = context.message
@@ -246,8 +260,10 @@ class MusicCommand : AudioEventAdapter(), Command {
 
     @SubCommand(
         name = "music disable",
+        usage = "\\* ~music disable",
         aliases = arrayOf("disable"),
-        permissions = arrayOf(MANAGE_SERVER))
+        permissions = arrayOf(MANAGE_SERVER),
+        description = "Disables the music module for this server.")
     fun musicDisable(context: CommandContext) {
 
         val message = context.message
@@ -283,7 +299,9 @@ class MusicCommand : AudioEventAdapter(), Command {
 
     @SubCommand(
         name = "music queue",
-        aliases = arrayOf("queue", "list"))
+        usage = "~music queue",
+        aliases = arrayOf("queue", "list"),
+        description = "Displays all the songs currently in the queue.")
     fun musicQueue(context: CommandContext) {
 
         val message = context.message
@@ -346,7 +364,9 @@ class MusicCommand : AudioEventAdapter(), Command {
 
     @SubCommand(
         name = "music current",
-        aliases = arrayOf("current", "song"))
+        usage = "~music current",
+        aliases = arrayOf("current", "song"),
+        description = "Displays detailed information about the current playing song.")
     fun musicCurrent(context: CommandContext) {
 
         val message = context.message
@@ -388,7 +408,9 @@ class MusicCommand : AudioEventAdapter(), Command {
 
     @SubCommand(
         name = "music history",
-        aliases = arrayOf("history", "past"))
+        usage = "~music history",
+        aliases = arrayOf("history", "past"),
+        description = "Displays songs that have already been played.")
     fun musicHistory(context: CommandContext) {
 
         val message = context.message
@@ -483,7 +505,9 @@ class MusicCommand : AudioEventAdapter(), Command {
 
     @SubCommand(
         name = "music voteskip",
-        aliases = arrayOf("voteskip"))
+        usage = "~music voteskip",
+        aliases = arrayOf("voteskip"),
+        description = "Initiates a vote to skip the currently playing song.")
     fun musicVoteSkip(context: CommandContext) {
 
         val message = context.message
@@ -637,6 +661,30 @@ class MusicCommand : AudioEventAdapter(), Command {
                 } is EmbedBuilder
             }.execute()
         }
+    }
+
+    private fun help(context: CommandContext) {
+        val mainCommand = context.mainCommand
+        val message = context.message
+        val textChannel = message.channel
+        val client = message.client
+
+        client.getRequestBuilder(textChannel).doAction {
+            EmbedBuilder().apply {
+
+                appendField(mainCommand.usage, mainCommand.description, false)
+                client.getCommandRegistry().getSubCommands(mainCommand).forEach {
+                    appendField(it.usage, it.description, false) //Unordered list
+                }
+
+                withFooterText("[*] Only those with the Manage " +
+                    "Server permission may use this command.")
+                withTitle("Music Help Menu")
+                withColor(Color.PINK)
+
+                textChannel.sendMessage(build())
+            } is EmbedBuilder
+        }.execute()
     }
 
     private fun play(trackUrl: String, context: CommandContext) {
