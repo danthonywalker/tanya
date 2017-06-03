@@ -349,8 +349,8 @@ class MusicCommand : AudioEventAdapter(), Command {
                                 nowPlaying?.let { withDescription("Now Playing: ${nowPlayingInfo!!.title} by " +
                                     "${nowPlayingInfo.author} as requested by ${trackMetadata[it]?.author?.name}") }
 
-                                val timeEst = queue.map { it.info.length }.sum() + (nowPlaying?.info?.length ?: 0)
-                                withTitle("Song Queue - (${queue.size}) | (EST: " + //Shows song counter/time left
+                                val timeEst = queue.map { it.info.length }.sum() + (nowPlaying?.position ?: 0)
+                                withTitle("Song Queue - (${queue.size}) | (EST: " + //Display song counter/EST
                                     "${DurationFormatUtils.formatDuration(timeEst, "HH:mm:ss")})")
                                 withColor(Color.CYAN)
 
@@ -851,7 +851,7 @@ class MusicCommand : AudioEventAdapter(), Command {
                                             appendField("Queue Limit", qText, true)
 
                                             val rText = if(requestLimit < 0) "Infinite" else requestLimit.toString()
-                                            appendField("Request Limit", rText, true)
+                                            appendField("User Request Limit", rText, true)
 
                                             appendField("Streamable", "This server ${if(streamable)
                                                 "does" else "does not"} support streaming.", false)
@@ -901,7 +901,8 @@ class MusicCommand : AudioEventAdapter(), Command {
         appendField("Title", trackInfo.title, true)
         appendField("Uploader", trackInfo.author, true)
 
-        appendField("Length", DurationFormatUtils.formatDuration(track.info.length, "HH:mm:ss"), true)
+        appendField("Position", DurationFormatUtils.formatDuration(track.position, "HH:mm:ss"), true)
+        appendField("Length", DurationFormatUtils.formatDuration(trackInfo.length, "HH:mm:ss"), true)
         appendField("Requester", trackMetadata[track]?.author?.name.toString(), true)
         appendField("Link", "<${trackInfo.uri}>", true)
 

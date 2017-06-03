@@ -74,12 +74,13 @@ class StatusCommand : Command {
 
                 val uptime = Duration.between(startTime, now)
                 val format = "dd 'days,' HH 'hours,' mm 'minutes,' ss 'seconds, and' SSS 'milliseconds'"
-                appendField("Uptime", DurationFormatUtils.formatDuration(uptime.toMillis(), format), true)
+                appendField("Uptime", DurationFormatUtils.formatDuration(uptime.toMillis(), format), false)
 
                 withAuthorIcon(client.applicationIconURL)
                 withThumbnail(client.applicationIconURL)
                 withAuthorName(client.applicationName)
                 withColor(Color.PINK)
+                withTimestamp(now)
 
                 textChannel.sendMessage(build())
             } is EmbedBuilder
